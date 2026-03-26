@@ -23,6 +23,16 @@ interface BuildSplitResponse {
   };
 }
 
+export interface ProjectHistoryItem {
+  id: string;
+  type: "round" | "payment";
+  txHash: string;
+  ledgerCloseTime: string;
+  round?: number;
+  amount: string;
+  recipient?: string;
+}
+
 function toErrorMessage(status: number, payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "message" in payload) {
     const message = (payload as { message?: unknown }).message;
@@ -65,6 +75,21 @@ export async function buildDistributeXdr(projectId: string, sourceAddress: strin
   return body as BuildSplitResponse;
 }
 
+export async function buildLockProjectXdr(projectId: string, owner: string): Promise<BuildSplitResponse> {
+  const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}/lock`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner })
+  });
+
+  const body = (await response.json().catch(() => null)) as unknown;
+  if (!response.ok) {
+    throw new Error(toErrorMessage(response.status, body, "Failed to build lock transaction"));
+  }
+
+  return body as BuildSplitResponse;
+}
+
 export async function getSplit(projectId: string): Promise<SplitProject> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}`);
   const body = (await response.json().catch(() => null)) as unknown;
@@ -74,10 +99,10 @@ export async function getSplit(projectId: string): Promise<SplitProject> {
   return body as SplitProject;
 }
 
-export async function getProjectHistory(projectId: string): Promise<any[]> {
+export async function getProjectHistory(projectId: string): Promise<ProjectHistoryItem[]> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}/history`);
   if (!response.ok) {
     throw new Error("Failed to fetch project history");
   }
-  return response.json();
+  return response.json() as Promise<ProjectHistoryItem[]>;
 }
