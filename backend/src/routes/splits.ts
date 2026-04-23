@@ -731,151 +731,55 @@ splitsRouter.post("/:projectId/distribute", async (req: Request, res: Response, 
   }
 });
 
-const adminTokenSchema = z.object({
-  admin: stellarAddressSchema.describe("admin"),
-  token: stellarAddressSchema.describe("token")
-});
-
-interface AdminTokenRequest {
-  admin: string;
-  token: string;
-}
-
-async function buildAllowTokenUnsignedXdr(input: AdminTokenRequest) {
-  const config = loadStellarConfig();
-  const server = getStellarRpcServer();
-
-  let sourceAccount;
-  try {
-    sourceAccount = await server.getAccount(input.admin);
-  } catch {
-    throw new RequestValidationError("admin account not found on selected network");
-  }
-
-  const adminAddress = Address.fromString(input.admin);
-  const tokenAddress = Address.fromString(input.token);
-
-  const contract = new Contract(config.contractId);
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase
-  })
-    .addOperation(
-      contract.call("allow_token", adminAddress.toScVal(), tokenAddress.toScVal())
-    )
-    .setTimeout(300)
-    .build();
-
-  const preparedTx = await server.prepareTransaction(tx);
-  return {
-    xdr: preparedTx.toXDR(),
-    metadata: {
-      contractId: config.contractId,
-      networkPassphrase: config.networkPassphrase,
-      sourceAccount: input.admin,
-      sequenceNumber: preparedTx.sequence,
-      fee: preparedTx.fee,
-      operation: "allow_token"
-    }
-  };
-}
-
-async function buildDisallowTokenUnsignedXdr(input: AdminTokenRequest) {
-  const config = loadStellarConfig();
-  const server = getStellarRpcServer();
-
-  let sourceAccount;
-  try {
-    sourceAccount = await server.getAccount(input.admin);
-  } catch {
-    throw new RequestValidationError("admin account not found on selected network");
-  }
-
-  const adminAddress = Address.fromString(input.admin);
-  const tokenAddress = Address.fromString(input.token);
-
-  const contract = new Contract(config.contractId);
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase
-  })
-    .addOperation(
-      contract.call("disallow_token", adminAddress.toScVal(), tokenAddress.toScVal())
-    )
-    .setTimeout(300)
-    .build();
-
-  const preparedTx = await server.prepareTransaction(tx);
-  return {
-    xdr: preparedTx.toXDR(),
-    metadata: {
-      contractId: config.contractId,
-      networkPassphrase: config.networkPassphrase,
-      sourceAccount: input.admin,
-      sequenceNumber: preparedTx.sequence,
-      fee: preparedTx.fee,
-      operation: "disallow_token"
-    }
-  };
-}
-
-splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next: NextFunction) => {
+splitsRouter.get("/:projectId/claimable/:address", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
-    const parsed = adminTokenSchema.safeParse(req.body);
-    if (!parsed.success) {
+    const { projectId, address } = req.params;
+
+    if (!projectId || !address) {
       return res.status(400).json({
         error: "validation_error",
-        message: "Invalid request payload.",
-        details: parsed.error.flatten(),
+        message: "projectId and address are required",
         requestId
       });
     }
 
-    try {
-      const result = await buildAllowTokenUnsignedXdr(parsed.data);
-      return res.status(200).json(result);
-    } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
-    }
-  } catch (error) {
-    return next(error);
-  }
-});
+    const config = loadStellarConfig();
+    const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
 
-splitsRouter.post("/admin/disallow-token", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const requestId = res.locals.requestId;
-    const parsed = adminTokenSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: parsed.error.flatten(),
+    let sourceAccount;
+    try {
+      sourceAccount = await server.getAccount(config.simulatorAccount);
+    } catch {
+      return res.status(500).json({
+        error: "server_error",
+        message: "simulator account not found",
         requestId
       });
     }
 
-    try {
-      const result = await buildDisallowTokenUnsignedXdr(parsed.data);
-      return res.status(200).json(result);
-    } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
+    const contract = new Contract(config.contractId);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase
+    })
+      .addOperation(
+        contract.call(
+          "get_claimable",
+          nativeToScVal(projectId, { type: "symbol" }),
+          Address.fromString(address).toScVal()
+        )
+      )
+      .setTimeout(300)
+      .build();
+
+    const simulated = await server.simulateTransaction(tx);
+    const retval = "result" in simulated ? simulated.result?.retval : undefined;
+    if (!retval) {
+      return res.status(404).json({ error: "not_found", message: "Claimable info not found", requestId });
     }
+
+    return res.status(200).json(scValToNative(retval));
   } catch (error) {
     return next(error);
   }
