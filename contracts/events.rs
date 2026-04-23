@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, Env, Event, Symbol, Val, Vec};
+use soroban_sdk::{Address, Env, Symbol};
 
 /// Emitted when a new royalty split project is created.
 ///
@@ -10,17 +10,12 @@ pub struct ProjectCreated {
     pub owner: Address,
 }
 
-impl Event for ProjectCreated {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "project_created").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        self.owner.clone().into_val(env)
+impl ProjectCreated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "project_created"), self.project_id.clone()),
+            self.owner.clone(),
+        );
     }
 }
 
@@ -33,17 +28,12 @@ pub struct ProjectLocked {
     pub project_id: Symbol,
 }
 
-impl Event for ProjectLocked {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "project_locked").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        self.project_id.clone().into_val(env)
+impl ProjectLocked {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "project_locked"), self.project_id.clone()),
+            self.project_id.clone(),
+        );
     }
 }
 
@@ -58,17 +48,12 @@ pub struct PaymentSent {
     pub amount: i128,
 }
 
-impl Event for PaymentSent {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "payment_sent").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        (self.recipient.clone(), self.amount).into_val(env)
+impl PaymentSent {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "payment_sent"), self.project_id.clone()),
+            (self.recipient.clone(), self.amount),
+        );
     }
 }
 
@@ -83,17 +68,12 @@ pub struct DistributionComplete {
     pub total: i128,
 }
 
-impl Event for DistributionComplete {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "distribution_complete").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        (self.round, self.total).into_val(env)
+impl DistributionComplete {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "distribution_complete"), self.project_id.clone()),
+            (self.round, self.total),
+        );
     }
 }
 
@@ -109,17 +89,12 @@ pub struct DepositReceived {
     pub project_balance: i128,
 }
 
-impl Event for DepositReceived {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "deposit_received").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        (self.from.clone(), self.amount, self.project_balance).into_val(env)
+impl DepositReceived {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "deposit_received"), self.project_id.clone()),
+            (self.from.clone(), self.amount, self.project_balance),
+        );
     }
 }
 
@@ -132,17 +107,12 @@ pub struct MetadataUpdated {
     pub project_id: Symbol,
 }
 
-impl Event for MetadataUpdated {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "metadata_updated").into_val(env),
-            self.project_id.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        self.project_id.clone().into_val(env)
+impl MetadataUpdated {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "metadata_updated"), self.project_id.clone()),
+            self.project_id.clone(),
+        );
     }
 }
 
@@ -159,16 +129,16 @@ pub struct UnallocatedWithdrawn {
     pub remaining_unallocated: i128,
 }
 
-impl Event for UnallocatedWithdrawn {
-    fn topics(&self, env: &Env) -> Vec<Val> {
-        vec![
-            env,
-            Symbol::new(env, "unallocated_withdrawn").into_val(env),
-            self.token.clone().into_val(env),
-        ]
-    }
-
-    fn data(&self, env: &Env) -> Val {
-        (self.admin.clone(), self.to.clone(), self.amount, self.remaining_unallocated).into_val(env)
+impl UnallocatedWithdrawn {
+    pub fn publish(&self, env: &Env) {
+        env.events().publish(
+            (Symbol::new(env, "unallocated_withdrawn"), self.token.clone()),
+            (
+                self.admin.clone(),
+                self.to.clone(),
+                self.amount,
+                self.remaining_unallocated,
+            ),
+        );
     }
 }

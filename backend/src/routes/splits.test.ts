@@ -217,6 +217,112 @@ describe("splits routes integration", () => {
     expect(getAccountMock).toHaveBeenCalledWith("GTESTSIMULATOR");
   });
 
+  it("builds allow_token transaction", async () => {
+    getAccountMock.mockResolvedValue({ accountId: "GADMIN" });
+    prepareTransactionMock.mockResolvedValue({
+      toXDR: () => "XDR_ALLOW_TOKEN",
+      sequence: "100",
+      fee: "100"
+    });
+
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/allow-token")
+      .send({ admin: "GADMIN", token: "GTOKEN" })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      xdr: "XDR_ALLOW_TOKEN",
+      metadata: {
+        contractId: "TESTCONTRACT",
+        networkPassphrase: "Test SDF Network",
+        sourceAccount: "GADMIN",
+        operation: "allow_token"
+      }
+    });
+
+    expect(getAccountMock).toHaveBeenCalledWith("GADMIN");
+  });
+
+  it("builds disallow_token transaction", async () => {
+    getAccountMock.mockResolvedValue({ accountId: "GADMIN" });
+    prepareTransactionMock.mockResolvedValue({
+      toXDR: () => "XDR_DISALLOW_TOKEN",
+      sequence: "101",
+      fee: "100"
+    });
+
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/disallow-token")
+      .send({ admin: "GADMIN", token: "GTOKEN" })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      xdr: "XDR_DISALLOW_TOKEN",
+      metadata: {
+        contractId: "TESTCONTRACT",
+        networkPassphrase: "Test SDF Network",
+        sourceAccount: "GADMIN",
+        operation: "disallow_token"
+      }
+    });
+
+    expect(getAccountMock).toHaveBeenCalledWith("GADMIN");
+  });
+
+  it("returns 400 for allow_token with missing fields", async () => {
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/allow-token")
+      .send({ admin: "GADMIN" }) // missing token
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+  });
+
+  it("returns 400 for disallow_token with missing fields", async () => {
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/disallow-token")
+      .send({ token: "GTOKEN" }) // missing admin
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+  });
+
+  it("returns 400 for allow_token when admin account not found", async () => {
+    getAccountMock.mockRejectedValue(new Error("not found"));
+
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/allow-token")
+      .send({ admin: "GADMIN", token: "GTOKEN" })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(response.body.message).toMatch(/admin account not found/);
+  });
+
+  it("returns 400 for disallow_token when admin account not found", async () => {
+    getAccountMock.mockRejectedValue(new Error("not found"));
+
+    const app = createApp();
+
+    const response = await request(app)
+      .post("/splits/admin/disallow-token")
+      .send({ admin: "GADMIN", token: "GTOKEN" })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(response.body.message).toMatch(/admin account not found/);
+  });
+
   it("retrieves history filtered and sorted", async () => {
     getAccountMock.mockResolvedValue({ accountId: "GSIM" });
 
@@ -266,5 +372,219 @@ describe("splits routes integration", () => {
     ]);
 
     expect(getEventsMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ============================================================
+//  ISSUE #174 — Lock & Update Owner-Gating Integration Tests
+// ============================================================
+
+describe("Issue #174: lock & update permissions and owner gating", () => {
+  const VALID_OWNER = "GOWNER";
+  const VALID_TOKEN = "GTOKEN";
+  const VALID_COLLAB_A = "GCOLLABA";
+  const VALID_COLLAB_B = "GCOLLABB";
+  const VALID_COLLAB_C = "GCOLLABC";
+
+  it("lock route passes owner through as sourceAccount in built XDR", async () => {
+    getAccountMock.mockResolvedValue({ accountId: VALID_OWNER });
+    prepareTransactionMock.mockResolvedValue({
+      toXDR: () => "XDR_LOCK",
+      sequence: "1",
+      fee: "100"
+    });
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/splits/proj_a/lock")
+      .send({ owner: VALID_OWNER })
+      .expect(200);
+
+    expect(response.body.metadata.sourceAccount).toBe(VALID_OWNER);
+    expect(response.body.metadata.operation).toBe("lock_project");
+    expect(getAccountMock).toHaveBeenCalledWith(VALID_OWNER);
+  });
+
+  it("lock route rejects missing owner with 400 validation_error", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/splits/proj_a/lock")
+      .send({})
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("lock route rejects invalid projectId (non-alphanumeric) with 400", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/splits/bad-id!/lock")
+      .send({ owner: VALID_OWNER })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("lock route surfaces 'owner account not found' as 400 when RPC lookup fails", async () => {
+    getAccountMock.mockRejectedValue(new Error("not_found"));
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/splits/proj_a/lock")
+      .send({ owner: VALID_OWNER })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(response.body.message).toMatch(/owner account not found/);
+  });
+
+  it("update-collaborators route passes owner through as sourceAccount", async () => {
+    getAccountMock.mockResolvedValue({ accountId: VALID_OWNER });
+    prepareTransactionMock.mockResolvedValue({
+      toXDR: () => "XDR_UPDATE",
+      sequence: "2",
+      fee: "100"
+    });
+
+    const app = createApp();
+    const response = await request(app)
+      .put("/splits/proj_a/collaborators")
+      .send({
+        owner: VALID_OWNER,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 6000 },
+          { address: VALID_COLLAB_B, alias: "B", basisPoints: 4000 }
+        ]
+      })
+      .expect(200);
+
+    expect(response.body.metadata.sourceAccount).toBe(VALID_OWNER);
+    expect(response.body.metadata.operation).toBe("update_collaborators");
+    expect(getAccountMock).toHaveBeenCalledWith(VALID_OWNER);
+  });
+
+  it("update-collaborators rejects missing owner with 400", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .put("/splits/proj_a/collaborators")
+      .send({
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 5000 },
+          { address: VALID_COLLAB_B, alias: "B", basisPoints: 5000 }
+        ]
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("update-collaborators rejects basisPoints that don't sum to 10000", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .put("/splits/proj_a/collaborators")
+      .send({
+        owner: VALID_OWNER,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 6000 },
+          { address: VALID_COLLAB_B, alias: "B", basisPoints: 3000 }
+        ]
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("update-collaborators rejects duplicate collaborator addresses", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .put("/splits/proj_a/collaborators")
+      .send({
+        owner: VALID_OWNER,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 5000 },
+          { address: VALID_COLLAB_A, alias: "A2", basisPoints: 5000 }
+        ]
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("update-collaborators rejects fewer than 2 collaborators", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .put("/splits/proj_a/collaborators")
+      .send({
+        owner: VALID_OWNER,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 10000 }
+        ]
+      })
+      .expect(400);
+
+    expect(response.body.error).toBe("validation_error");
+    expect(getAccountMock).not.toHaveBeenCalled();
+  });
+
+  it("full lifecycle: same owner can create → update collaborators → lock", async () => {
+    getAccountMock.mockResolvedValue({ accountId: VALID_OWNER });
+    prepareTransactionMock
+      .mockResolvedValueOnce({ toXDR: () => "XDR_CREATE", sequence: "1", fee: "100" })
+      .mockResolvedValueOnce({ toXDR: () => "XDR_UPDATE", sequence: "2", fee: "100" })
+      .mockResolvedValueOnce({ toXDR: () => "XDR_LOCK", sequence: "3", fee: "100" });
+
+    const app = createApp();
+
+    // 1. Create
+    const createRes = await request(app)
+      .post("/splits")
+      .send({
+        owner: VALID_OWNER,
+        projectId: "lifecycle_1",
+        title: "Lifecycle Project",
+        projectType: "music",
+        token: VALID_TOKEN,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 5000 },
+          { address: VALID_COLLAB_B, alias: "B", basisPoints: 5000 }
+        ]
+      })
+      .expect(200);
+    expect(createRes.body.metadata.operation).toBe("create_project");
+    expect(createRes.body.metadata.sourceAccount).toBe(VALID_OWNER);
+
+    // 2. Update collaborators (still pre-lock)
+    const updateRes = await request(app)
+      .put("/splits/lifecycle_1/collaborators")
+      .send({
+        owner: VALID_OWNER,
+        collaborators: [
+          { address: VALID_COLLAB_A, alias: "A", basisPoints: 3000 },
+          { address: VALID_COLLAB_B, alias: "B", basisPoints: 3000 },
+          { address: VALID_COLLAB_C, alias: "C", basisPoints: 4000 }
+        ]
+      })
+      .expect(200);
+    expect(updateRes.body.metadata.operation).toBe("update_collaborators");
+    expect(updateRes.body.metadata.sourceAccount).toBe(VALID_OWNER);
+
+    // 3. Lock
+    const lockRes = await request(app)
+      .post("/splits/lifecycle_1/lock")
+      .send({ owner: VALID_OWNER })
+      .expect(200);
+    expect(lockRes.body.metadata.operation).toBe("lock_project");
+    expect(lockRes.body.metadata.sourceAccount).toBe(VALID_OWNER);
+
+    // All 3 ops called getAccount with the same owner address
+    const ownerCalls = getAccountMock.mock.calls.filter(
+      (call) => call[0] === VALID_OWNER
+    );
+    expect(ownerCalls.length).toBe(3);
   });
 });

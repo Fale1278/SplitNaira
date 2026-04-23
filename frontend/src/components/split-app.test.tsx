@@ -167,6 +167,97 @@ describe("SplitApp lock project flow", () => {
   });
 });
 
+// ============================================================
+//  ISSUE #174 — Owner-gating & Lock Lifecycle UI Tests
+// ============================================================
+
+describe("Issue #174: owner gating and lock lifecycle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: true,
+      address: "GOWNER123",
+      network: "testnet"
+    });
+    mocks.mockGetProjectHistory.mockResolvedValue([]);
+    mocks.mockGetSplit.mockResolvedValue(baseProject);
+    mocks.mockSignWithFreighter.mockResolvedValue("SIGNED_XDR");
+    mocks.mockBuildLockProjectXdr.mockResolvedValue({
+      xdr: "LOCK_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockSendTransaction.mockResolvedValue({ status: "PENDING", hash: "LIFECYCLE_HASH" });
+  });
+
+  it("non-owner without wallet connection cannot see lock button and sees no locked banner on unlocked project", async () => {
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: false,
+      address: null,
+      network: null
+    });
+
+    await loadProject();
+    expect(screen.queryByRole("button", { name: "Lock Project" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Split locked - immutable")).not.toBeInTheDocument();
+  });
+
+  it("non-owner with wallet connected to a different address cannot lock", async () => {
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: true,
+      address: "GATTACKER_NOT_OWNER",
+      network: "testnet"
+    });
+
+    await loadProject();
+    expect(screen.queryByRole("button", { name: "Lock Project" })).not.toBeInTheDocument();
+  });
+
+  it("owner sees both lock button AND no locked banner on unlocked project", async () => {
+    await loadProject();
+    expect(screen.getByRole("button", { name: "Lock Project" })).toBeInTheDocument();
+    expect(screen.queryByText("Split locked - immutable")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Locked state active/)).not.toBeInTheDocument();
+  });
+
+  it("locked project shows both locked-immutable badge and 'Locked state active' secondary message", async () => {
+    mocks.mockGetSplit.mockResolvedValue({ ...baseProject, locked: true });
+
+    await loadProject();
+    expect(screen.getByText("Split locked - immutable")).toBeInTheDocument();
+    expect(screen.getByText(/Locked state active/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Lock Project" })).not.toBeInTheDocument();
+  });
+
+  it("lifecycle: confirming the lock modal invokes buildLockProjectXdr with owner address and project id", async () => {
+    const user = await loadProject();
+    expect(screen.getByRole("button", { name: "Lock Project" })).toBeInTheDocument();
+    expect(screen.queryByText("Split locked - immutable")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Lock Project" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Lock Project" }));
+
+    await waitFor(() => {
+      expect(mocks.mockBuildLockProjectXdr).toHaveBeenCalledWith("project_1", "GOWNER123");
+    });
+    // Owner address is forwarded to the backend so the contract's owner-gating check can reject non-owners.
+    expect(mocks.mockBuildLockProjectXdr).toHaveBeenCalledTimes(1);
+  });
+
+  it("even a non-owner viewing a locked project sees the locked banner (observer view)", async () => {
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: true,
+      address: "GRANDOM_USER",
+      network: "testnet"
+    });
+    mocks.mockGetSplit.mockResolvedValue({ ...baseProject, locked: true });
+
+    await loadProject();
+    expect(screen.getByText("Split locked - immutable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Lock Project" })).not.toBeInTheDocument();
+  });
+});
+
 describe("SplitApp distribute flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();

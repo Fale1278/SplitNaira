@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    token, Address, Env, String, Symbol, Vec, vec,
+    token, Address, Env, IntoVal, String, Symbol, Vec, vec,
 };
 
 // ============================================================
@@ -1038,27 +1038,24 @@ fn test_deposit_emits_deposit_received_event() {
     // Verify that exactly two relevant events were emitted:
     // 1) project_created  2) deposit_received (with updated project balance)
     let expected_events = vec![
+        &env,
         (
             contract_id.clone(),
-            Vec::from_slice(
+            vec![
                 &env,
-                &[
-                    Symbol::new(&env, "project_created"),
-                    project_id.clone(),
-                ],
-            ),
-            owner.clone(),
+                Symbol::new(&env, "project_created").into_val(&env),
+                project_id.clone().into_val(&env),
+            ],
+            owner.clone().into_val(&env),
         ),
         (
             contract_id.clone(),
-            Vec::from_slice(
+            vec![
                 &env,
-                &[
-                    Symbol::new(&env, "deposit_received"),
-                    project_id.clone(),
-                ],
-            ),
-            (funder.clone(), amount, amount),
+                Symbol::new(&env, "deposit_received").into_val(&env),
+                project_id.clone().into_val(&env),
+            ],
+            (funder.clone(), amount, amount).into_val(&env),
         ),
     ];
     assert_eq!(env.events().all(), expected_events);
@@ -1586,4 +1583,193 @@ fn test_withdraw_unallocated_fails_with_invalid_amount() {
 
     let result = client.try_withdraw_unallocated(&contract_admin, &token, &recovery_to, &0i128);
     assert_eq!(result, Err(Ok(SplitError::InvalidAmount)));
+}
+
+// ============================================================
+//  END-TO-END PERMISSION & LOCK LIFECYCLE TESTS
+//
+//  These tests document, in narrative form, the permission and
+//  lock rules the contract enforces. Each test reads top-to-bottom
+//  like a spec: the setup states the actors, each call states the
+//  intent, and the assertion states the rule being enforced.
+//
+//  Layers exercised:
+//    - Contract rules for owner gating (Unauthorized)
+//    - Contract rules for lock gating (ProjectLocked / AlreadyLocked)
+//    - Full lifecycle ordering (create -> edit -> lock -> reject)
+// ============================================================
+
+/// Walks the full permission lifecycle of a project in one test so the
+/// rules read as a single story:
+///   1. Owner creates the project
+///   2. Owner edits collaborators while unlocked        -> allowed
+///   3. Owner edits metadata while unlocked             -> allowed
+///   4. Owner locks the project                         -> allowed
+///   5. Owner tries to edit collaborators after lock    -> ProjectLocked
+///   6. Owner tries to edit metadata after lock         -> ProjectLocked
+///   7. Owner tries to lock again                       -> AlreadyLocked
+#[test]
+fn test_lifecycle_pre_lock_edit_lock_post_lock_reject() {
+    let (env, _admin, token) = create_test_env();
+    let contract_id = env.register_contract(None, SplitNairaContract);
+    let client = SplitNairaContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let project_id = Symbol::new(&env, "lifecycle");
+
+    // 1. Owner creates the project.
+    let initial_collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice.clone(), bob.clone()]),
+        Vec::from_slice(&env, &[6000u32, 4000u32]),
+    );
+    client.create_project(
+        &owner,
+        &project_id,
+        &String::from_str(&env, "Lifecycle Project"),
+        &String::from_str(&env, "music"),
+        &token,
+        &initial_collabs,
+    );
+
+    // 2. Owner edits collaborators while unlocked — allowed.
+    let updated_collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice.clone(), bob.clone(), carol.clone()]),
+        Vec::from_slice(&env, &[5000u32, 3000u32, 2000u32]),
+    );
+    client.update_collaborators(&project_id, &owner, &updated_collabs);
+    let after_edit = client.get_project(&project_id).unwrap();
+    assert_eq!(after_edit.collaborators.len(), 3);
+    assert_eq!(after_edit.locked, false);
+
+    // 3. Owner edits metadata while unlocked — allowed.
+    client.update_project_metadata(
+        &project_id,
+        &owner,
+        &String::from_str(&env, "Lifecycle Project (renamed)"),
+        &String::from_str(&env, "film"),
+    );
+    let after_metadata = client.get_project(&project_id).unwrap();
+    assert_eq!(
+        after_metadata.title,
+        String::from_str(&env, "Lifecycle Project (renamed)")
+    );
+    assert_eq!(
+        after_metadata.project_type,
+        String::from_str(&env, "film")
+    );
+
+    // 4. Owner locks the project — allowed.
+    client.lock_project(&project_id, &owner);
+    let locked = client.get_project(&project_id).unwrap();
+    assert_eq!(locked.locked, true);
+
+    // 5. Owner tries to edit collaborators after lock — ProjectLocked.
+    let post_lock_collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice.clone(), bob.clone()]),
+        Vec::from_slice(&env, &[7000u32, 3000u32]),
+    );
+    let collab_result =
+        client.try_update_collaborators(&project_id, &owner, &post_lock_collabs);
+    assert_eq!(collab_result, Err(Ok(SplitError::ProjectLocked)));
+
+    // 6. Owner tries to edit metadata after lock — ProjectLocked.
+    let metadata_result = client.try_update_project_metadata(
+        &project_id,
+        &owner,
+        &String::from_str(&env, "Tampered Title"),
+        &String::from_str(&env, "art"),
+    );
+    assert_eq!(metadata_result, Err(Ok(SplitError::ProjectLocked)));
+
+    // 7. Owner tries to lock again — AlreadyLocked.
+    let relock_result = client.try_lock_project(&project_id, &owner);
+    assert_eq!(relock_result, Err(Ok(SplitError::AlreadyLocked)));
+}
+
+/// Non-owner cannot lock a project. Contract returns Unauthorized
+/// before the signature check has any effect.
+#[test]
+fn test_non_owner_cannot_lock_project() {
+    let (env, _admin, token) = create_test_env();
+    let contract_id = env.register_contract(None, SplitNairaContract);
+    let client = SplitNairaContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let not_owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let project_id = Symbol::new(&env, "lock_unauth");
+
+    let collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice, bob]),
+        Vec::from_slice(&env, &[5000u32, 5000u32]),
+    );
+    client.create_project(
+        &owner,
+        &project_id,
+        &String::from_str(&env, "Lock Unauthorized"),
+        &String::from_str(&env, "music"),
+        &token,
+        &collabs,
+    );
+
+    // Attacker attempts to lock — must be rejected.
+    let result = client.try_lock_project(&project_id, &not_owner);
+    assert_eq!(result, Err(Ok(SplitError::Unauthorized)));
+
+    // And the project must still be unlocked afterwards.
+    let project = client.get_project(&project_id).unwrap();
+    assert_eq!(project.locked, false);
+}
+
+/// Non-owner cannot update collaborators. Contract returns Unauthorized.
+#[test]
+fn test_non_owner_cannot_update_collaborators() {
+    let (env, _admin, token) = create_test_env();
+    let contract_id = env.register_contract(None, SplitNairaContract);
+    let client = SplitNairaContractClient::new(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    let not_owner = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let project_id = Symbol::new(&env, "collab_unauth");
+
+    let original_collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice.clone(), bob.clone()]),
+        Vec::from_slice(&env, &[5000u32, 5000u32]),
+    );
+    client.create_project(
+        &owner,
+        &project_id,
+        &String::from_str(&env, "Collab Unauthorized"),
+        &String::from_str(&env, "music"),
+        &token,
+        &original_collabs,
+    );
+
+    // Attacker-chosen collaborator set — should never be applied.
+    let attacker_collabs = make_collaborators(
+        &env,
+        Vec::from_slice(&env, &[alice, bob, carol]),
+        Vec::from_slice(&env, &[1000u32, 1000u32, 8000u32]),
+    );
+    let result =
+        client.try_update_collaborators(&project_id, &not_owner, &attacker_collabs);
+    assert_eq!(result, Err(Ok(SplitError::Unauthorized)));
+
+    // And the original collaborator set must be intact.
+    let project = client.get_project(&project_id).unwrap();
+    assert_eq!(project.collaborators.len(), 2);
+    assert_eq!(project.collaborators.get(0u32).unwrap().basis_points, 5000u32);
+    assert_eq!(project.collaborators.get(1u32).unwrap().basis_points, 5000u32);
 }

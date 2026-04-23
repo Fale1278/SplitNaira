@@ -82,6 +82,7 @@ pub enum DataKey {
     AllowedToken(Address),
     /// Global flag to pause all distributions (emergency stop)
     DistributionsPaused,
+}
 
 /// Returned by `get_claimable`: how much a collaborator has received and the
 /// last distribution round the project has completed.
