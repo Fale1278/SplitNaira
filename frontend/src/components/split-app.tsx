@@ -95,6 +95,12 @@ export function SplitApp() {
 
   // Phase 3: Projects tab state
   const [projectsList, setProjectsList] = useState<SplitProject[]>([]);
+  const [projectsTotal, setProjectsTotal] = useState(0);
+  const [projectsStart, setProjectsStart] = useState(0);
+  const [projectsLimit] = useState(6);
+  const [projectsSortBy, setProjectsSortBy] = useState("projectId");
+  const [projectsSortOrder, setProjectsSortOrder] = useState<"asc" | "desc">("desc");
+  const [projectsTypeFilter, setProjectsTypeFilter] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isLoadingProjectsList, setIsLoadingProjectsList] = useState(false);
   const [projectsListError, setProjectsListError] = useState<string | null>(null);
@@ -915,31 +921,32 @@ export function SplitApp() {
     }
   };
 
-  // Phase 3: Fetch projects list from seeded IDs
-  const onFetchProjectsList = useCallback(async () => {
+  // Phase 3: Fetch projects list with discovery params
+  const onFetchProjectsList = useCallback(async (startOffset = 0, append = false) => {
     setIsLoadingProjectsList(true);
     setProjectsListError(null);
     try {
-      const projects: SplitProject[] = [];
-      let failedFetches = 0;
-      for (const projectId of SEEDED_PROJECT_IDS) {
-        try {
-          const project = await getSplit(projectId);
-          projects.push(project);
-        } catch (error) {
-          failedFetches += 1;
-          console.error(`Failed to fetch project ${projectId}:`, error);
-        }
+      const data = await getAllSplits({
+        start: startOffset,
+        limit: projectsLimit,
+        sortBy: projectsSortBy,
+        sortOrder: projectsSortOrder,
+        projectType: projectsTypeFilter || undefined,
+      });
+
+      setProjectsTotal(data.total);
+      setProjectsStart(data.start);
+      
+      if (append) {
+        setProjectsList(prev => [...prev, ...data.items]);
+      } else {
+        setProjectsList(data.items);
       }
+      
       setIsProjectsListStale(false);
-      setProjectsList(projects);
-      if (failedFetches > 0) {
-        const message = `${failedFetches} project request${failedFetches > 1 ? "s" : ""} failed during refresh.`;
-        setProjectsListError(message);
-        setIsProjectsListStale(projects.length > 0);
-      }
-      if (projects.length === 0) {
-        notify.info("No projects found.");
+      
+      if (data.items.length === 0 && !append) {
+        notify.info("No projects found matching your criteria.");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fetch projects list.";
@@ -948,12 +955,17 @@ export function SplitApp() {
     } finally {
       setIsLoadingProjectsList(false);
     }
-  }, [projectsList.length]);
+  }, [projectsLimit, projectsSortBy, projectsSortOrder, projectsTypeFilter, projectsList.length]);
+
+  const onLoadMoreProjects = () => {
+    onFetchProjectsList(projectsStart + projectsLimit, true);
+  };
 
   const onFetchDashboardData = async () => {
     setIsLoadingDashboard(true);
     try {
-      const projects = await getAllSplits();
+      const data = await getAllSplits({ limit: 100 }); // Dashboard shows a larger overview
+      const projects = data.items;
       setDashboardData(projects);
 
       if (wallet.connected && wallet.address) {
@@ -981,21 +993,21 @@ export function SplitApp() {
     }
   };
 
-  // Load projects list when switching to Projects tab
+  const hasFetchedProjectsRef = useRef(false);
+  const hasFetchedDashboardRef = useRef(false);
+
   useEffect(() => {
-    if (activeTab === "projects" && projectsList.length === 0 && !isLoadingProjectsList) {
+    if (activeTab === "projects" && !hasFetchedProjectsRef.current) {
+      hasFetchedProjectsRef.current = true;
       void onFetchProjectsList();
-    } else if (activeTab === "dashboard" && dashboardData.length === 0 && !isLoadingDashboard) {
+    } else if (activeTab === "dashboard" && !hasFetchedDashboardRef.current) {
+      hasFetchedDashboardRef.current = true;
       void onFetchDashboardData();
     }
   }, [
     activeTab,
-    dashboardData.length,
-    isLoadingDashboard,
-    isLoadingProjectsList,
     onFetchDashboardData,
     onFetchProjectsList,
-    projectsList.length
   ]);
 
   return (
@@ -2052,33 +2064,101 @@ export function SplitApp() {
             {selectedProjectId === null ? (
               <div className="space-y-8">
                 <div className="glass-card rounded-[2.5rem] p-8 md:p-10">
-                  <h2 className="font-display text-2xl tracking-tight mb-2">Available Projects</h2>
-                  <p className="text-muted text-sm mb-6">Browse and manage existing split projects</p>
-                  <button
-                    onClick={onFetchProjectsList}
-                    disabled={isLoadingProjectsList}
-                    className="premium-button rounded-2xl bg-greenMid px-8 py-4 text-xs font-bold uppercase tracking-widest text-white disabled:opacity-20"
-                  >
-                    {isLoadingProjectsList ? (
-                      <div className="flex items-center gap-3">
-                        <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        Loading Projects...
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+                    <div className="space-y-1">
+                      <h2 className="font-display text-2xl tracking-tight">Discovery</h2>
+                      <p className="text-muted text-sm">Browse and manage existing split projects</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-muted">
+                        Total: <span className="text-ink">{projectsTotal}</span>
                       </div>
-                    ) : (
-                      "Refresh Projects"
-                    )}
-                  </button>
+                      <button
+                        onClick={() => onFetchProjectsList(0, false)}
+                        disabled={isLoadingProjectsList}
+                        className="premium-button rounded-xl bg-white/5 p-2.5 text-muted hover:text-ink transition-all"
+                        title="Refresh"
+                      >
+                        <svg className={clsx("h-4 w-4", isLoadingProjectsList && "animate-spin")} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-6 md:grid-cols-4">
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-muted px-1">Filter by Type</label>
+                      <select
+                        value={projectsTypeFilter}
+                        onChange={(e) => {
+                          setProjectsTypeFilter(e.target.value);
+                          // Trigger fetch automatically on change
+                          setTimeout(() => onFetchProjectsList(0, false), 0);
+                        }}
+                        className="glass-input w-full rounded-xl px-4 py-2.5 text-xs bg-transparent"
+                      >
+                        <option value="" className="bg-[#0a0a09]">All Categories</option>
+                        <option value="music" className="bg-[#0a0a09]">Music</option>
+                        <option value="film" className="bg-[#0a0a09]">Film</option>
+                        <option value="art" className="bg-[#0a0a09]">Art</option>
+                        <option value="podcast" className="bg-[#0a0a09]">Podcast</option>
+                        <option value="book" className="bg-[#0a0a09]">Book</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2 space-y-2">
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-muted px-1">Sort By</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={projectsSortBy}
+                          onChange={(e) => {
+                            setProjectsSortBy(e.target.value);
+                            setTimeout(() => onFetchProjectsList(0, false), 0);
+                          }}
+                          className="glass-input flex-1 rounded-xl px-4 py-2.5 text-xs bg-transparent"
+                        >
+                          <option value="projectId" className="bg-[#0a0a09]">Creation Order</option>
+                          <option value="title" className="bg-[#0a0a09]">Title</option>
+                          <option value="totalDistributed" className="bg-[#0a0a09]">Payout Volume</option>
+                          <option value="distributionRound" className="bg-[#0a0a09]">Activity (Rounds)</option>
+                        </select>
+                        <button
+                          onClick={() => {
+                            setProjectsSortOrder(prev => prev === "asc" ? "desc" : "asc");
+                            setTimeout(() => onFetchProjectsList(0, false), 0);
+                          }}
+                          className="glass-input rounded-xl px-3 py-2 text-muted hover:text-ink transition-all"
+                        >
+                          {projectsSortOrder === "asc" ? (
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+                            </svg>
+                          ) : (
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h9m5-1l4 4m0 0l4-4m-4 4V4" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        onClick={() => onFetchProjectsList(0, false)}
+                        className="premium-button w-full rounded-xl bg-greenMid/10 py-2.5 text-[10px] font-bold uppercase tracking-widest text-greenBright hover:bg-greenMid/20 transition-all border border-greenBright/10"
+                      >
+                        Apply Discovery
+                      </button>
+                    </div>
+                  </div>
+
                   {projectsListError && (
-                    <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3">
+                    <div className="mt-6 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-red-300">
-                        Failed to refresh projects: {projectsListError}
+                        Discovery Error: {projectsListError}
                       </p>
                       {isProjectsListStale && (
                         <p className="mt-1 text-[10px] uppercase tracking-widest text-amber-300">
-                          Showing stale project list data.
+                          Showing stale discovery data.
                         </p>
                       )}
                     </div>
@@ -2118,6 +2198,17 @@ export function SplitApp() {
                         </div>
                       </button>
                     ))}
+                    {projectsList.length < projectsTotal && (
+                      <div className="md:col-span-2 flex justify-center pt-8">
+                        <button
+                          onClick={onLoadMoreProjects}
+                          disabled={isLoadingProjectsList}
+                          className="premium-button rounded-2xl bg-white/5 border border-white/10 px-12 py-4 text-[10px] font-bold uppercase tracking-widest text-muted hover:text-ink hover:bg-white/10 transition-all disabled:opacity-20"
+                        >
+                          {isLoadingProjectsList ? "Syncing..." : "Load More Projects ↓"}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="glass-card rounded-[2.5rem] p-12 text-center">

@@ -144,13 +144,36 @@ export async function getSplit(projectId: string): Promise<SplitProject> {
   return body as SplitProject;
 }
 
-export async function getAllSplits(): Promise<SplitProject[]> {
-  const response = await fetch(`${API_BASE_URL}/splits`);
+export interface ListProjectsResponse {
+  items: SplitProject[];
+  total: number;
+  start: number;
+  limit: number;
+}
+
+export async function getAllSplits(params?: {
+  start?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
+  projectType?: string;
+  owner?: string;
+  locked?: boolean;
+}): Promise<ListProjectsResponse> {
+  const url = new URL(`${API_BASE_URL}/splits`);
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined) {
+        url.searchParams.set(key, String(value));
+      }
+    });
+  }
+  const response = await fetch(url.toString());
   const body = (await response.json().catch(() => null)) as unknown;
   if (!response.ok) {
     throw new Error(toErrorMessage(response.status, body, "Failed to fetch projects"));
   }
-  return body as SplitProject[];
+  return body as ListProjectsResponse;
 }
 
 export async function getClaimable(projectId: string, address: string): Promise<{ claimed: number; claimable: number }> {
