@@ -1,5 +1,3 @@
-import { readFile, writeFile } from "node:fs/promises";
-
 export interface PayoutRecord {
   id: string;
   roundId: string;
@@ -43,7 +41,8 @@ export function createPayoutHistoryService(config?: Partial<PayoutIndexConfig>):
 
   async function loadFromStorage(): Promise<void> {
     try {
-      const data = await readFile(storageFile, "utf8");
+      const fs = await import("node:fs/promises");
+      const data = await fs.readFile(storageFile, "utf8");
       const records: PayoutRecord[] = JSON.parse(data);
       for (const record of records) {
         cache.set(record.id, record);
@@ -54,8 +53,11 @@ export function createPayoutHistoryService(config?: Partial<PayoutIndexConfig>):
   }
 
   async function saveToStorage(): Promise<void> {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
     const records = Array.from(cache.values());
-    await writeFile(storageFile, JSON.stringify(records, null, 2), "utf8");
+    await fs.mkdir(path.dirname(storageFile), { recursive: true });
+    await fs.writeFile(storageFile, JSON.stringify(records, null, 2), "utf8");
   }
 
   return {

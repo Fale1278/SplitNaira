@@ -28,6 +28,7 @@ vi.mock("../services/stellar.js", () => {
       getEvents: mockGetEvents,
       getAccount: mockGetAccount
     }),
+    executeWithRetry: async <T>(operation: () => Promise<T>) => operation(),
     RequestValidationError
   };
 });
@@ -99,5 +100,6 @@ describe("Split History Precise Filtering", () => {
     expect(res.body.items[1].type).toBe("round");
     expect(res.body.items[0].recipient).toBe("GABC");
     expect(res.body.items[1].round).toBe(1);
+    expect(res.body.nextCursor).toBeNull();
   });
 });

@@ -33,7 +33,8 @@ export interface ProjectHistoryResponse {
 
 export interface ClaimableInfo {
   claimed: string | number;
-  distributionRound: number;
+  claimable?: string | number;
+  distributionRound?: number;
 }
 
 export interface TokenAllowlistState {
@@ -161,6 +162,39 @@ export async function buildDisallowTokenXdr(
   );
 }
 
+export async function buildUpdateMetadataXdr(
+  projectId: string,
+  owner: string,
+  title: string,
+  projectType: string
+): Promise<BuildSplitResponse> {
+  return requestJson<BuildSplitResponse>(
+    `/splits/${encodeURIComponent(projectId)}/metadata`,
+    "Failed to build metadata update transaction",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner, title, projectType })
+    }
+  );
+}
+
+export async function buildUpdateCollaboratorsXdr(
+  projectId: string,
+  owner: string,
+  collaborators: Array<{ address: string; alias: string; basisPoints: number }>
+): Promise<BuildSplitResponse> {
+  return requestJson<BuildSplitResponse>(
+    `/splits/${encodeURIComponent(projectId)}/collaborators`,
+    "Failed to build collaborators update transaction",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner, collaborators })
+    }
+  );
+}
+
 export async function getSplit(projectId: string): Promise<SplitProject> {
   return requestJson<SplitProject>(
     `/splits/${encodeURIComponent(projectId)}`,
@@ -169,7 +203,7 @@ export async function getSplit(projectId: string): Promise<SplitProject> {
 }
 
 export async function getAllSplits(): Promise<SplitProject[]> {
-  return requestJson<SplitProject[]>("/splits?start=0&limit=100", "Failed to fetch split projects");
+  return requestJson<SplitProject[]>("/splits", "Failed to fetch projects");
 }
 
 export async function getClaimable(
@@ -178,15 +212,17 @@ export async function getClaimable(
 ): Promise<ClaimableInfo> {
   return requestJson<ClaimableInfo>(
     `/splits/${encodeURIComponent(projectId)}/claimable/${encodeURIComponent(address)}`,
-    "Failed to fetch claimable amount"
+    "Failed to fetch claimable info"
   );
 }
 
 export async function getProjectHistory(
-  projectId: string
+  projectId: string,
+  cursor?: string
 ): Promise<ProjectHistoryResponse> {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
   return requestJson<ProjectHistoryResponse>(
-    `/splits/${encodeURIComponent(projectId)}/history`,
+    `/splits/${encodeURIComponent(projectId)}/history${query}`,
     "Failed to fetch project history"
   );
 }

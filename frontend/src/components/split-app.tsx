@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { rpc, Transaction, StrKey } from "@stellar/stellar-sdk";
 import { clsx } from "clsx";
 
@@ -11,6 +11,8 @@ import {
   buildDepositXdr,
   buildDistributeXdr,
   buildLockProjectXdr,
+  buildUpdateMetadataXdr,
+  buildUpdateCollaboratorsXdr,
   getAllSplits,
   getClaimable,
   getProjectHistory,
@@ -21,13 +23,11 @@ import {
 } from "@/lib/api";
 import { isOwner } from "@/lib/address";
 import {
-  connectFreighter,
-  getFreighterWalletState,
   signWithFreighter,
-  type WalletState,
 } from "@/lib/freighter";
-import { type SplitProject } from "@/lib/stellar";
-import { useToast } from "./toast-provider";
+import { type SplitProject, getExplorerUrl, getExplorerLabel } from "@/lib/stellar";
+import { useWallet } from "@/hooks/useWallet";
+import { notify } from "@/lib/notification";
 import { TokenSelector } from "./TypeSelector";
 
 interface CollaboratorInput {
@@ -58,14 +58,18 @@ const SEEDED_PROJECT_IDS = [
   "cultural_resonance_05",
 ];
 
-export function SplitApp() {
-  const { showToast } = useToast();
+interface TransactionReceipt {
+  hash: string;
+  action: "create" | "deposit" | "distribute" | "lock";
+  projectId: string;
+  title?: string;
+  amount?: string;
+  round?: number;
+}
 
-  const [wallet, setWallet] = useState<WalletState>({
-    connected: false,
-    address: null,
-    network: null,
-  });
+export function SplitApp() {
+  const { wallet, connect, refresh } = useWallet();
+
   const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
   const [projectType, setProjectType] = useState("music");
@@ -73,6 +77,7 @@ export function SplitApp() {
   const [collaborators, setCollaborators] = useState<CollaboratorInput[]>(getInitialCollaborators());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<TransactionReceipt | null>(null);
   const [createdProject, setCreatedProject] = useState<SplitProject | null>(
     null,
   );
@@ -91,6 +96,7 @@ export function SplitApp() {
   const [depositAmount, setDepositAmount] = useState("");
   const [isDepositing, setIsDepositing] = useState(false);
   const [history, setHistory] = useState<ProjectHistoryItem[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const lockModalRef = useRef<HTMLDivElement | null>(null);
   const depositModalRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +105,97 @@ export function SplitApp() {
   const [projectsList, setProjectsList] = useState<SplitProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isLoadingProjectsList, setIsLoadingProjectsList] = useState(false);
+
+  // Metadata editing state
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editProjectType, setEditProjectType] = useState("music");
+  const [isUpdatingMetadata, setIsUpdatingMetadata] = useState(false);
+
+  // Collaborator editing state
+  const [isEditingCollaborators, setIsEditingCollaborators] = useState(false);
+  const [editCollaborators, setEditCollaborators] = useState<CollaboratorInput[]>([]);
+  const [isUpdatingCollaborators, setIsUpdatingCollaborators] = useState(false);
+
+  async function onUpdateCollaborators() {
+    if (!fetchedProject || !wallet.address) return;
+
+    // Use the same validation logic as create flow
+    const totalBP = editCollaborators.reduce((sum, c) => {
+      const parsed = Number.parseInt(c.basisPoints, 10);
+      return sum + (Number.isFinite(parsed) ? parsed : 0);
+    }, 0);
+
+    if (totalBP !== 10_000) {
+      notify.error("Total basis points must equal 10,000.");
+      return;
+    }
+
+    const errors: Record<string, string> = {};
+    const addresses = new Map<string, string>();
+    const duplicates = new Set<string>();
+
+    editCollaborators.forEach((c) => {
+      const addr = c.address.trim();
+      if (addr) {
+        if (!StrKey.isValidEd25519PublicKey(addr) && !StrKey.isValidContract(addr)) {
+          errors[c.id] = "Invalid address";
+        } else if (addresses.has(addr)) {
+          duplicates.add(addr);
+        } else {
+          addresses.set(addr, c.id);
+        }
+      } else {
+        errors[c.id] = "Address is required";
+      }
+    });
+
+    if (duplicates.size > 0 || Object.keys(errors).length > 0 || editCollaborators.length < 2) {
+      notify.error("Please fix collaborator validation errors.");
+      return;
+    }
+
+    setIsUpdatingCollaborators(true);
+    try {
+      const buildResponse = await buildUpdateCollaboratorsXdr(
+        fetchedProject.projectId,
+        wallet.address,
+        editCollaborators.map(c => ({
+          address: c.address.trim(),
+          alias: c.alias.trim(),
+          basisPoints: Number.parseInt(c.basisPoints, 10)
+        }))
+      );
+
+      const signedTxXdr = await signWithFreighter(
+        buildResponse.xdr,
+        buildResponse.metadata.networkPassphrase
+      );
+
+      const server = new rpc.Server(
+        process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org",
+        { allowHttp: true }
+      );
+      const transaction = new Transaction(
+        signedTxXdr,
+        buildResponse.metadata.networkPassphrase
+      );
+      const submitResponse = await server.sendTransaction(transaction);
+
+      if (submitResponse.status === "ERROR") {
+        throw new Error(submitResponse.errorResult?.toString() ?? "Transaction failed.");
+      }
+
+      notify.success("Collaborators updated successfully.");
+      setIsEditingCollaborators(false);
+      await onFetchProject();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update collaborators.";
+      notify.error(message);
+    } finally {
+      setIsUpdatingCollaborators(false);
+    }
+  }
 
   // Earnings Dashboard state
   const [dashboardData, setDashboardData] = useState<SplitProject[]>([]);
@@ -160,6 +257,58 @@ export function SplitApp() {
     [totalBasisPoints, validationErrors],
   );
 
+  const editCollaboratorsValidationErrors = useMemo(() => {
+    const errors: Record<string, string> = {};
+    const addresses = new Map<string, string>();
+    const duplicates = new Set<string>();
+
+    editCollaborators.forEach((c) => {
+      const addr = c.address.trim();
+      if (addr) {
+        if (
+          !StrKey.isValidEd25519PublicKey(addr) &&
+          !StrKey.isValidContract(addr)
+        ) {
+          errors[c.id] = "Invalid Stellar address (G...) or contract ID (C...)";
+        } else {
+          if (addresses.has(addr)) {
+            duplicates.add(addr);
+          } else {
+            addresses.set(addr, c.id);
+          }
+        }
+      }
+    });
+
+    if (duplicates.size > 0) {
+      editCollaborators.forEach((c) => {
+        const addr = c.address.trim();
+        if (duplicates.has(addr)) {
+          errors[c.id] = "Duplicate address";
+        }
+      });
+    }
+
+    return errors;
+  }, [editCollaborators]);
+
+  const editCollaboratorsTotalBasisPoints = useMemo(
+    () =>
+      editCollaborators.reduce((sum, c) => {
+        const parsed = Number.parseInt(c.basisPoints, 10);
+        return sum + (Number.isFinite(parsed) ? parsed : 0);
+      }, 0),
+    [editCollaborators]
+  );
+
+  const isEditCollaboratorsValid = useMemo(
+    () =>
+      editCollaboratorsTotalBasisPoints === 10_000 &&
+      Object.keys(editCollaboratorsValidationErrors).length === 0 &&
+      editCollaborators.length >= 2,
+    [editCollaboratorsTotalBasisPoints, editCollaboratorsValidationErrors, editCollaborators.length]
+  );
+
   // Step validation
   const isStep1Valid = useMemo(
     () =>
@@ -189,13 +338,7 @@ export function SplitApp() {
     ? isOwner(tokenAllowlist.admin, wallet.address)
     : false;
 
-  useEffect(() => {
-    void getFreighterWalletState()
-      .then(setWallet)
-      .catch(() => {
-        setWallet({ connected: false, address: null, network: null });
-      });
-  }, []);
+  // Note: wallet state and synchronization is now handled by the root WalletProvider and useWallet hook.
 
   useEffect(() => {
     let cancelled = false;
@@ -222,37 +365,79 @@ export function SplitApp() {
 
   async function onConnectWallet() {
     try {
-      const state = await connectFreighter();
-      setWallet(state);
-      showToast("Wallet connected.", "success");
+      await connect();
+      notify.success("Wallet connected.");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Wallet connection failed.";
-      showToast(message, "error");
+      notify.error(message);
     }
   }
 
   async function onReconnectWallet() {
     try {
-      const state = await getFreighterWalletState();
-      setWallet(state);
-      showToast(
-        state.connected ? "Wallet reconnected." : "Wallet not authorized.",
-        "info",
-      );
+      await refresh();
+      notify.info(wallet.connected ? "Wallet reconnected." : "Wallet not authorized.");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Wallet refresh failed.";
-      showToast(message, "error");
+      notify.error(message);
     }
   }
 
   function onDisconnectWallet() {
-    setWallet({ connected: false, address: null, network: null });
-    showToast("Wallet disconnected.", "info");
+    // Note: useWallet doesn't have a disconnect method yet as Freighter doesn't support it well,
+    // but we can refresh to get current state or just notify.
+    notify.info("Freighter does not support programmatic disconnect. Use the extension to revoke access.");
   }
 
-  function onWizardNext() {
+  async function onUpdateMetadata() {
+    if (!fetchedProject || !wallet.address) return;
+    if (!editTitle.trim()) {
+      notify.error("Title is required.");
+      return;
+    }
+
+    setIsUpdatingMetadata(true);
+    try {
+      const buildResponse = await buildUpdateMetadataXdr(
+        fetchedProject.projectId,
+        wallet.address,
+        editTitle.trim(),
+        editProjectType.trim()
+      );
+
+      const signedTxXdr = await signWithFreighter(
+        buildResponse.xdr,
+        buildResponse.metadata.networkPassphrase
+      );
+
+      const server = new rpc.Server(
+        process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org",
+        { allowHttp: true }
+      );
+      const transaction = new Transaction(
+        signedTxXdr,
+        buildResponse.metadata.networkPassphrase
+      );
+      const submitResponse = await server.sendTransaction(transaction);
+
+      if (submitResponse.status === "ERROR") {
+        throw new Error(submitResponse.errorResult?.toString() ?? "Transaction failed.");
+      }
+
+      notify.success("Project metadata updated successfully.");
+      setIsEditingMetadata(false);
+      await onFetchProject();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update metadata.";
+      notify.error(message);
+    } finally {
+      setIsUpdatingMetadata(false);
+    }
+  }
+
+  function _onWizardNext() {
     if (createStep === 1 && isStep1Valid) {
       setCreateStep(2);
     } else if (createStep === 2 && isStep2Valid) {
@@ -262,13 +447,13 @@ export function SplitApp() {
     }
   }
 
-  function onWizardBack() {
+  function _onWizardBack() {
     if (createStep > 1) {
       setCreateStep(createStep - 1);
     }
   }
 
-  function onWizardReset() {
+  function _onWizardReset() {
     setCreateStep(1);
     setProjectId("");
     setTitle("");
@@ -276,7 +461,86 @@ export function SplitApp() {
     setToken("");
     setCollaborators(getInitialCollaborators());
     setTxHash(null);
+    setReceipt(null);
     setCreatedProject(null);
+  }
+
+  function TransactionReceiptView({ receipt, network }: { receipt: TransactionReceipt; network: string | null }) {
+    const explorerUrl = getExplorerUrl(receipt.hash, network);
+    const explorerLabel = getExplorerLabel(network);
+
+    const actionConfig = {
+      create: {
+        title: "Project Created Successfully",
+        icon: (
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        ),
+        summary: `Project "${receipt.title}" initialized.`,
+      },
+      deposit: {
+        title: "Deposit Successful",
+        icon: (
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+        ),
+        summary: `Deposited ${receipt.amount} tokens to ${receipt.projectId}.`,
+      },
+      distribute: {
+        title: "Distribution Successful",
+        icon: (
+          <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+        ),
+        summary: `Round #${receipt.round} completed for ${receipt.projectId}.`,
+      },
+      lock: {
+        title: "Project Locked Permanently",
+        icon: (
+          <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+        ),
+        summary: `Configuration for ${receipt.projectId} is now immutable.`,
+      },
+    }[receipt.action];
+
+    return (
+      <div className="mt-8 rounded-2xl border border-greenBright/20 bg-greenBright/5 p-6 animate-in fade-in slide-in-from-bottom-4">
+        <div className="flex items-start gap-4">
+          <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-full bg-greenBright/10">
+            <svg
+              className="h-6 w-6 text-greenBright"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2.5}
+            >
+              {actionConfig.icon}
+            </svg>
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-greenBright uppercase tracking-widest">
+              {actionConfig.title}
+            </h3>
+            <p className="text-[11px] text-muted-foreground font-medium italic opacity-90">
+              {actionConfig.summary}
+            </p>
+            <div className="pt-2 space-y-1">
+              <p className="font-mono text-[9px] text-muted break-all opacity-60">
+                Tx: {receipt.hash}
+              </p>
+              <a
+                href={explorerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-[10px] font-bold text-greenBright underline underline-offset-4 hover:text-white transition-colors"
+              >
+                Verify on {explorerLabel}
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function updateCollaborator(id: string, patch: Partial<CollaboratorInput>) {
@@ -300,14 +564,33 @@ export function SplitApp() {
     );
   }
 
+  function updateEditCollaborator(id: string, patch: Partial<CollaboratorInput>) {
+    setEditCollaborators((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+  }
+
+  function addEditCollaborator() {
+    setEditCollaborators((prev) => [
+      ...prev,
+      { id: `edit-collab-${Date.now()}-${prev.length}`, address: "", alias: "", basisPoints: "0" },
+    ]);
+  }
+
+  function removeEditCollaborator(id: string) {
+    setEditCollaborators((prev) =>
+      prev.length <= 2 ? prev : prev.filter((c) => c.id !== id)
+    );
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!wallet.connected || !wallet.address) {
-      showToast("Connect Freighter wallet first.", "error");
+      notify.error("Connect Freighter wallet first.");
       return;
     }
     if (!isValid) {
-      showToast("Please fix the validation errors.", "error");
+      notify.error("Please fix the validation errors.");
       return;
     }
     const collaboratorPayload = collaborators.map((collaborator) => ({
@@ -317,6 +600,7 @@ export function SplitApp() {
     }));
     setIsSubmitting(true);
     setTxHash(null);
+    setReceipt(null);
     try {
       const buildResponse = await buildCreateSplitXdr({
         owner: wallet.address,
@@ -347,7 +631,15 @@ export function SplitApp() {
         );
       }
       setTxHash(submitResponse.hash ?? null);
-      showToast("Split project created successfully.", "success");
+      if (submitResponse.hash) {
+        setReceipt({
+          hash: submitResponse.hash,
+          action: "create",
+          projectId: projectId.trim(),
+          title: title.trim(),
+        });
+      }
+      notify.success("Split project created successfully.");
 
       // Fetch and store the created project details
       try {
@@ -364,17 +656,22 @@ export function SplitApp() {
         error instanceof Error
           ? error.message
           : "Failed to create split project.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  async function fetchHistory(id: string) {
+  async function fetchHistory(id: string, cursor?: string) {
     setIsLoadingHistory(true);
     try {
-      const data = await getProjectHistory(id);
-      setHistory(data.items);
+      const data = await getProjectHistory(id, cursor);
+      if (cursor) {
+        setHistory((prev) => [...prev, ...data.items]);
+      } else {
+        setHistory(data.items);
+      }
+      setHistoryCursor(data.nextCursor);
     } catch (error) {
       console.error("Failed to fetch history:", error);
     } finally {
@@ -388,11 +685,12 @@ export function SplitApp() {
     try {
       const project = await getSplit(searchProjectId.trim());
       setFetchedProject(project);
+      setIsEditingCollaborators(false);
       await fetchHistory(searchProjectId.trim());
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to fetch project.";
-      showToast(message, "error");
+      notify.error(message);
       setFetchedProject(null);
     } finally {
       setIsFetchingProject(false);
@@ -403,6 +701,7 @@ export function SplitApp() {
     if (!fetchedProject || !wallet.address) return;
     setIsSubmitting(true);
     setTxHash(null);
+    setReceipt(null);
     setShowDistributeModal(false);
     try {
       const { xdr, metadata } = await buildDistributeXdr(
@@ -430,12 +729,20 @@ export function SplitApp() {
         );
       }
       setTxHash(submitResponse.hash ?? null);
-      showToast("Distribution initiated successfully.", "success");
+      if (submitResponse.hash) {
+        setReceipt({
+          hash: submitResponse.hash,
+          action: "distribute",
+          projectId: fetchedProject.projectId,
+          round: fetchedProject.distributionRound + 1,
+        });
+      }
+      notify.success("Distribution initiated successfully.");
       await onFetchProject();
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Distribution failed.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -508,6 +815,7 @@ export function SplitApp() {
 
     setIsLocking(true);
     setTxHash(null);
+    setReceipt(null);
     try {
       const { xdr, metadata } = await buildLockProjectXdr(fetchedProject.projectId, wallet.address);
       const signedTxXdr = await signWithFreighter(xdr, metadata.networkPassphrase);
@@ -522,12 +830,19 @@ export function SplitApp() {
       }
 
       setTxHash(submitResponse.hash ?? null);
+      if (submitResponse.hash) {
+        setReceipt({
+          hash: submitResponse.hash,
+          action: "lock",
+          projectId: fetchedProject.projectId,
+        });
+      }
       setFetchedProject((prev) => (prev ? { ...prev, locked: true } : prev));
       setShowLockModal(false);
-      showToast("Project locked permanently.", "success");
+      notify.success("Project locked permanently.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to lock project.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsLocking(false);
     }
@@ -589,12 +904,13 @@ export function SplitApp() {
     }
 
     if (!depositAmount || Number.parseFloat(depositAmount) <= 0) {
-      showToast("Please enter a valid deposit amount.", "error");
+      notify.error("Please enter a valid deposit amount.");
       return;
     }
 
     setIsDepositing(true);
     setTxHash(null);
+    setReceipt(null);
     try {
       const amountInStroops = Math.floor(Number.parseFloat(depositAmount) * 10_000_000);
       const { xdr, metadata } = await buildDepositXdr(
@@ -614,21 +930,29 @@ export function SplitApp() {
       }
 
       setTxHash(submitResponse.hash ?? null);
+      if (submitResponse.hash) {
+        setReceipt({
+          hash: submitResponse.hash,
+          action: "deposit",
+          projectId: fetchedProject.projectId,
+          amount: depositAmount,
+        });
+      }
       setShowDepositModal(false);
       setDepositAmount("");
-      showToast("Deposit successful!", "success");
+      notify.success("Deposit successful!");
       // Refresh project details to show updated balance
       await onFetchProject();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Deposit failed.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsDepositing(false);
     }
   };
 
   // Phase 3: Fetch projects list from seeded IDs
-  const onFetchProjectsList = async () => {
+  const onFetchProjectsList = useCallback(async () => {
     setIsLoadingProjectsList(true);
     try {
       const projects: SplitProject[] = [];
@@ -642,15 +966,15 @@ export function SplitApp() {
       }
       setProjectsList(projects);
       if (projects.length === 0) {
-        showToast("No projects found.", "info");
+        notify.info("No projects found.");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fetch projects list.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsLoadingProjectsList(false);
     }
-  };
+  }, []);
 
   const onFetchDashboardData = async () => {
     setIsLoadingDashboard(true);
@@ -677,7 +1001,7 @@ export function SplitApp() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load dashboard.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsLoadingDashboard(false);
     }
@@ -692,7 +1016,7 @@ export function SplitApp() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to refresh token allowlist.";
-      showToast(message, "error");
+      notify.error(message);
       return null;
     } finally {
       setIsLoadingAllowlist(false);
@@ -701,12 +1025,12 @@ export function SplitApp() {
 
   const onSubmitAllowlistAction = async (action: "allow" | "disallow") => {
     if (!wallet.address || !isContractAdmin) {
-      showToast("Only the configured contract admin can manage the allowlist.", "error");
+      notify.error("Only the configured contract admin can manage the allowlist.");
       return;
     }
 
     if (!isValidAllowlistToken) {
-      showToast("Enter a valid Stellar account or contract address.", "error");
+      notify.error("Enter a valid Stellar account or contract address.");
       return;
     }
 
@@ -743,17 +1067,16 @@ export function SplitApp() {
         txHash: submitResponse.hash ?? null
       });
       setAllowlistTokenInput("");
-      showToast(
+      notify.success(
         action === "allow"
           ? "Token added to the allowlist."
-          : "Token removed from the allowlist.",
-        "success"
+          : "Token removed from the allowlist."
       );
       await refreshTokenAllowlist();
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to update token allowlist.";
-      showToast(message, "error");
+      notify.error(message);
     } finally {
       setIsUpdatingAllowlist(false);
     }
@@ -766,7 +1089,15 @@ export function SplitApp() {
     } else if (activeTab === "dashboard" && dashboardData.length === 0 && !isLoadingDashboard) {
       void onFetchDashboardData();
     }
-  }, [activeTab, wallet.connected]);
+  }, [
+    activeTab,
+    dashboardData.length,
+    isLoadingDashboard,
+    isLoadingProjectsList,
+    onFetchDashboardData,
+    onFetchProjectsList,
+    projectsList.length
+  ]);
 
   return (
     <main className="min-h-screen px-6 py-12 md:px-12 selection:bg-greenBright/10 selection:text-greenBright">
@@ -1421,42 +1752,8 @@ export function SplitApp() {
               </button>
             </div>
 
-            {txHash && (
-              <div className="mt-8 rounded-2xl border border-greenBright/20 bg-greenBright/5 p-6 animate-in fade-in slide-in-from-bottom-4">
-                <div className="flex items-start gap-4">
-                  <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-full bg-greenBright/10">
-                    <svg
-                      className="h-6 w-6 text-greenBright"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-bold text-greenBright uppercase tracking-widest">
-                      Project Created Successfully
-                    </h3>
-                    <p className="font-mono text-[10px] text-muted break-all opacity-80">
-                      Hash: {txHash}
-                    </p>
-                    <a
-                      href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block pt-2 text-[10px] font-bold text-greenBright underline underline-offset-4 hover:text-white"
-                    >
-                      View on Explorer →
-                    </a>
-                  </div>
-                </div>
-              </div>
+            {receipt && receipt.action === "create" && (
+              <TransactionReceiptView receipt={receipt} network={wallet.network} />
             )}
 
             {createdProject && (
@@ -1617,15 +1914,49 @@ export function SplitApp() {
                         Split locked - immutable
                       </p>
                     </div>
-                  ) : canLockProject ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowLockModal(true)}
-                      className="premium-button rounded-2xl border border-red-400/30 bg-red-500/10 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-red-300 transition hover:bg-red-500/20"
-                    >
-                      Lock Project
-                    </button>
-                  ) : null}
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {isProjectOwner && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditTitle(fetchedProject.title);
+                              setEditProjectType(fetchedProject.projectType);
+                              setIsEditingMetadata(true);
+                            }}
+                            className="premium-button rounded-2xl border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink transition hover:bg-white/10"
+                          >
+                            Edit Metadata
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditCollaborators(fetchedProject.collaborators.map((c, i) => ({
+                                id: `edit-collab-${i}`,
+                                address: c.address,
+                                alias: c.alias,
+                                basisPoints: String(c.basisPoints)
+                              })));
+                              setIsEditingCollaborators(true);
+                            }}
+                            className="premium-button rounded-2xl border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink transition hover:bg-white/10"
+                          >
+                            Edit Collaborators
+                          </button>
+                        </>
+                      )}
+                      {canLockProject && (
+                        <button
+                          type="button"
+                          onClick={() => setShowLockModal(true)}
+                          className="premium-button rounded-2xl border border-red-400/30 bg-red-500/10 px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-red-300 transition hover:bg-red-500/20"
+                        >
+                          Lock Project
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="text-right space-y-1">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted">
                       Available Funds
@@ -1652,22 +1983,116 @@ export function SplitApp() {
                       )}
                     </div>
                     <div className="space-y-3">
-                      {fetchedProject.collaborators.map((collab, idx) => (
-                        <div
-                          key={idx}
-                          className="flex justify-between items-center rounded-2xl bg-white/2 p-4 text-sm border border-white/5 hover:bg-white/4 transition-colors"
-                        >
-                          <div className="space-y-0.5">
-                            <p className="font-bold">{collab.alias}</p>
-                            <p className="font-mono text-[10px] text-muted opacity-60 truncate max-w-37.5">
-                              {collab.address}
-                            </p>
+                      {isEditingCollaborators ? (
+                        <div className="space-y-6">
+                          <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-muted">Editor Mode</p>
+                            <button
+                              type="button"
+                              onClick={addEditCollaborator}
+                              className="text-[10px] font-bold uppercase tracking-widest text-greenBright hover:text-white transition-colors"
+                            >
+                              + Add Recipient
+                            </button>
                           </div>
-                          <span className="font-mono font-bold text-greenBright/80">
-                            {(collab.basisPoints / 100).toFixed(2)}%
-                          </span>
+
+                          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                            {editCollaborators.map((c, index) => (
+                              <div key={c.id} className="bg-white/2 rounded-2xl p-4 border border-white/5 space-y-4 group">
+                                <div className="flex justify-between items-start">
+                                  <span className="text-[9px] font-bold text-muted uppercase">Recipient #{index + 1}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeEditCollaborator(c.id)}
+                                    className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-300"
+                                  >
+                                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                <div className="space-y-3">
+                                  <input
+                                    value={c.address}
+                                    onChange={(e) => updateEditCollaborator(c.id, { address: e.target.value })}
+                                    placeholder="Wallet Address"
+                                    className={clsx(
+                                      "glass-input w-full rounded-xl px-4 py-2 text-xs",
+                                      editCollaboratorsValidationErrors[c.id] ? "border-red-500/50 bg-red-500/5" : ""
+                                    )}
+                                  />
+                                  {editCollaboratorsValidationErrors[c.id] && (
+                                    <p className="text-[9px] font-bold text-red-400 uppercase tracking-tighter pl-1">{editCollaboratorsValidationErrors[c.id]}</p>
+                                  )}
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <input
+                                      value={c.alias}
+                                      onChange={(e) => updateEditCollaborator(c.id, { alias: e.target.value })}
+                                      placeholder="Alias"
+                                      className="glass-input w-full rounded-xl px-4 py-2 text-xs"
+                                    />
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        value={c.basisPoints}
+                                        onChange={(e) => updateEditCollaborator(c.id, { basisPoints: e.target.value })}
+                                        placeholder="BP"
+                                        className="glass-input w-full rounded-xl px-4 py-2 text-xs pr-8"
+                                      />
+                                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-bold text-muted opacity-40">BP</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="pt-4 border-t border-white/5 space-y-4">
+                            <div className="flex justify-between items-center bg-white/2 rounded-xl p-3 border border-white/5">
+                              <span className="text-[10px] font-bold uppercase tracking-widest text-muted">Total BP</span>
+                              <span className={clsx(
+                                "font-mono font-bold text-xs",
+                                editCollaboratorsTotalBasisPoints === 10_000 ? "text-greenBright" : "text-red-400"
+                              )}>
+                                {editCollaboratorsTotalBasisPoints.toLocaleString()} / 10,000
+                              </span>
+                            </div>
+
+                            <div className="flex gap-3">
+                              <button
+                                onClick={onUpdateCollaborators}
+                                disabled={isUpdatingCollaborators || !isEditCollaboratorsValid}
+                                className="flex-1 premium-button rounded-xl bg-greenMid py-3 text-[10px] font-bold uppercase tracking-widest text-white shadow-lg shadow-greenMid/20 disabled:opacity-20"
+                              >
+                                {isUpdatingCollaborators ? "Saving..." : "Save Changes"}
+                              </button>
+                              <button
+                                onClick={() => setIsEditingCollaborators(false)}
+                                className="flex-1 premium-button rounded-xl border border-white/10 bg-white/5 py-3 text-[10px] font-bold uppercase tracking-widest text-ink transition hover:bg-white/10"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      ))}
+                      ) : (
+                        fetchedProject.collaborators.map((collab, idx) => (
+                          <div
+                            key={idx}
+                            className="flex justify-between items-center rounded-2xl bg-white/2 p-4 text-sm border border-white/5 hover:bg-white/4 transition-colors"
+                          >
+                            <div className="space-y-0.5">
+                              <p className="font-bold">{collab.alias}</p>
+                              <p className="font-mono text-[10px] text-muted opacity-60 truncate max-w-37.5">
+                                {collab.address}
+                              </p>
+                            </div>
+                            <span className="font-mono font-bold text-greenBright/80">
+                              {(collab.basisPoints / 100).toFixed(2)}%
+                            </span>
+                          </div>
+                        ))
+                      )}
                     </div>
 
                     <div className="pt-6 border-t border-white/5">
@@ -1805,12 +2230,12 @@ export function SplitApp() {
                                 )}
                               </p>
                               <a
-                                href={`https://stellar.expert/explorer/testnet/tx/${item.txHash}`}
+                                href={getExplorerUrl(item.txHash, wallet.network)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-[9px] font-bold text-greenBright/40 hover:text-greenBright transition-colors uppercase tracking-widest mt-1"
                               >
-                                Verify Transaction →
+                                Verify on {getExplorerLabel(wallet.network)} →
                               </a>
                             </div>
                           </div>
@@ -1818,6 +2243,18 @@ export function SplitApp() {
                       ) : (
                         <div className="pl-10 text-[10px] font-bold uppercase tracking-widest text-muted opacity-40 italic">
                           No verified history found for this project
+                        </div>
+                      )}
+
+                      {historyCursor && (
+                        <div className="mt-4 mb-8 flex justify-center">
+                          <button
+                            onClick={() => fetchedProject && fetchHistory(fetchedProject.projectId, historyCursor)}
+                            disabled={isLoadingHistory}
+                            className="text-[10px] font-bold uppercase tracking-[0.2em] text-greenBright hover:text-white transition-colors disabled:opacity-50"
+                          >
+                            {isLoadingHistory ? "Loading..." : "Load More History ↓"}
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1855,35 +2292,8 @@ export function SplitApp() {
                       </p>
                     )}
 
-                    {txHash && (
-                      <div className="mt-6 rounded-2xl border border-greenBright/20 bg-greenBright/5 p-5 animate-in fade-in slide-in-from-bottom-4">
-                        <div className="flex items-start gap-4">
-                          <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-greenBright/10">
-                            <svg className="h-5 w-5 text-greenBright" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                            </svg>
-                          </div>
-                          <div className="space-y-1">
-                            <h4 className="text-xs font-bold text-greenBright uppercase tracking-widest">
-                              Distribution Successful
-                            </h4>
-                            <p className="text-[10px] text-muted">
-                              Round #{fetchedProject.distributionRound + 1} completed
-                            </p>
-                            <p className="font-mono text-[10px] text-muted break-all opacity-80">
-                              Tx: {txHash}
-                            </p>
-                            <a
-                              href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-block pt-1 text-[10px] font-bold text-greenBright underline underline-offset-4 hover:text-white"
-                            >
-                              View on Explorer →
-                            </a>
-                          </div>
-                        </div>
-                      </div>
+                    {receipt && (receipt.action === "distribute" || receipt.action === "lock" || receipt.action === "deposit") && (
+                      <TransactionReceiptView receipt={receipt} network={wallet.network} />
                     )}
                   </div>
                 </div>
@@ -2068,12 +2478,12 @@ export function SplitApp() {
                                   )}
                                 </p>
                                 <a
-                                  href={`https://stellar.expert/explorer/testnet/tx/${item.txHash}`}
+                                  href={getExplorerUrl(item.txHash, wallet.network)}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-[9px] font-bold text-greenBright/40 hover:text-greenBright transition-colors uppercase tracking-widest mt-1"
                                 >
-                                  Verify Transaction →
+                                  Verify on {getExplorerLabel(wallet.network)} →
                                 </a>
                               </div>
                             </div>
@@ -2081,6 +2491,18 @@ export function SplitApp() {
                         ) : (
                           <div className="pl-10 text-[10px] font-bold uppercase tracking-widest text-muted opacity-40 italic">
                             No verified history found for this project
+                          </div>
+                        )}
+
+                        {historyCursor && (
+                          <div className="mt-4 mb-8 flex justify-center">
+                            <button
+                              onClick={() => fetchedProject && fetchHistory(fetchedProject.projectId, historyCursor)}
+                              disabled={isLoadingHistory}
+                              className="text-[10px] font-bold uppercase tracking-[0.2em] text-greenBright hover:text-white transition-colors disabled:opacity-50"
+                            >
+                              {isLoadingHistory ? "Loading..." : "Load More History ↓"}
+                            </button>
                           </div>
                         )}
                       </div>
@@ -2094,6 +2516,10 @@ export function SplitApp() {
                       </button>
                       {!wallet.connected && <p className="text-center text-[10px] font-bold text-red-500 uppercase tracking-widest">Connect wallet to distribute</p>}
                       {Number(fetchedProject.balance) <= 0 && <p className="text-center text-[10px] font-bold text-muted uppercase tracking-widest">No funds available to distribute</p>}
+
+                      {receipt && (receipt.action === "distribute" || receipt.action === "lock" || receipt.action === "deposit") && (
+                        <TransactionReceiptView receipt={receipt} network={wallet.network} />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2102,6 +2528,48 @@ export function SplitApp() {
           </div>
         )}
       </div>
+
+        {/* Metadata Edit Modal */}
+        {isEditingMetadata && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+            <div className="glass-card w-full max-w-lg rounded-[2.5rem] p-10 animate-in zoom-in-95 duration-200">
+              <h2 className="font-display text-2xl mb-8">Edit Project Metadata</h2>
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted">Project Title</label>
+                  <input
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="glass-input w-full rounded-2xl px-5 py-4 text-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-muted">Category</label>
+                  <input
+                    value={editProjectType}
+                    onChange={(e) => setEditProjectType(e.target.value)}
+                    className="glass-input w-full rounded-2xl px-5 py-4 text-sm"
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button
+                    onClick={() => setIsEditingMetadata(false)}
+                    className="flex-1 rounded-2xl border border-white/10 px-6 py-4 text-xs font-bold uppercase tracking-widest hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={onUpdateMetadata}
+                    disabled={isUpdatingMetadata || !editTitle.trim()}
+                    className="flex-1 premium-button rounded-2xl bg-white px-6 py-4 text-xs font-bold uppercase tracking-widest text-[#0a0a09] disabled:opacity-50"
+                  >
+                    {isUpdatingMetadata ? "Updating..." : "Save Changes"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Distribution Confirmation Modal */}
       {showDistributeModal && fetchedProject && (
