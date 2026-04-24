@@ -88,6 +88,8 @@ export function SplitApp() {
   const [history, setHistory] = useState<ProjectHistoryItem[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [isHistoryStale, setIsHistoryStale] = useState(false);
   const lockModalRef = useRef<HTMLDivElement | null>(null);
   const depositModalRef = useRef<HTMLDivElement | null>(null);
 
@@ -95,6 +97,10 @@ export function SplitApp() {
   const [projectsList, setProjectsList] = useState<SplitProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isLoadingProjectsList, setIsLoadingProjectsList] = useState(false);
+  const [projectsListError, setProjectsListError] = useState<string | null>(null);
+  const [isProjectsListStale, setIsProjectsListStale] = useState(false);
+  const [projectFetchError, setProjectFetchError] = useState<string | null>(null);
+  const [isProjectStale, setIsProjectStale] = useState(false);
 
   // Metadata editing state
   const [isEditingMetadata, setIsEditingMetadata] = useState(false);
@@ -613,6 +619,7 @@ export function SplitApp() {
 
   async function fetchHistory(id: string, cursor?: string) {
     setIsLoadingHistory(true);
+    setHistoryError(null);
     try {
       const data = await getProjectHistory(id, cursor);
       if (cursor) {
@@ -621,8 +628,11 @@ export function SplitApp() {
         setHistory(data.items);
       }
       setHistoryCursor(data.nextCursor);
+      setIsHistoryStale(false);
     } catch (error) {
-      console.error("Failed to fetch history:", error);
+      const message = error instanceof Error ? error.message : "Failed to fetch history.";
+      setHistoryError(message);
+      setIsHistoryStale(history.length > 0);
     } finally {
       setIsLoadingHistory(false);
     }
@@ -631,16 +641,21 @@ export function SplitApp() {
   const onFetchProject = async () => {
     if (!searchProjectId.trim()) return;
     setIsFetchingProject(true);
+    setProjectFetchError(null);
     try {
       const project = await getSplit(searchProjectId.trim());
       setFetchedProject(project);
       setIsEditingCollaborators(false);
+      setIsProjectStale(false);
       await fetchHistory(searchProjectId.trim());
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to fetch project.";
-      notify.error(message);
-      setFetchedProject(null);
+      setProjectFetchError(message);
+      setIsProjectStale(Boolean(fetchedProject));
+      if (!fetchedProject) {
+        setFetchedProject(null);
+      }
     } finally {
       setIsFetchingProject(false);
     }
@@ -903,27 +918,37 @@ export function SplitApp() {
   // Phase 3: Fetch projects list from seeded IDs
   const onFetchProjectsList = useCallback(async () => {
     setIsLoadingProjectsList(true);
+    setProjectsListError(null);
     try {
       const projects: SplitProject[] = [];
+      let failedFetches = 0;
       for (const projectId of SEEDED_PROJECT_IDS) {
         try {
           const project = await getSplit(projectId);
           projects.push(project);
         } catch (error) {
+          failedFetches += 1;
           console.error(`Failed to fetch project ${projectId}:`, error);
         }
       }
+      setIsProjectsListStale(false);
       setProjectsList(projects);
+      if (failedFetches > 0) {
+        const message = `${failedFetches} project request${failedFetches > 1 ? "s" : ""} failed during refresh.`;
+        setProjectsListError(message);
+        setIsProjectsListStale(projects.length > 0);
+      }
       if (projects.length === 0) {
         notify.info("No projects found.");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fetch projects list.";
-      notify.error(message);
+      setProjectsListError(message);
+      setIsProjectsListStale(projectsList.length > 0);
     } finally {
       setIsLoadingProjectsList(false);
     }
-  }, []);
+  }, [projectsList.length]);
 
   const onFetchDashboardData = async () => {
     setIsLoadingDashboard(true);
@@ -1580,6 +1605,18 @@ export function SplitApp() {
                   {isFetchingProject ? "Searching..." : "Fetch Stats"}
                 </button>
               </div>
+              {projectFetchError && (
+                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-red-300">
+                    Failed to refresh project: {projectFetchError}
+                  </p>
+                  {fetchedProject && isProjectStale && (
+                    <p className="mt-1 text-[10px] uppercase tracking-widest text-amber-300">
+                      Showing stale project data.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {fetchedProject && (
@@ -1606,6 +1643,7 @@ export function SplitApp() {
                       </p>
                     </div>
                   ) : (
+                    <>
                       {isProjectOwner && (
                         <div className="flex gap-2">
                           <button
@@ -1645,7 +1683,7 @@ export function SplitApp() {
                           Lock Project
                         </button>
                       )}
-                    </div>
+                    </>
                   )}
                   <div className="text-right space-y-1">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted">
@@ -1932,7 +1970,24 @@ export function SplitApp() {
                         ))
                       ) : (
                         <div className="pl-10 text-[10px] font-bold uppercase tracking-widest text-muted opacity-40 italic">
-                          No verified history found for this project
+                          {historyError ? "History unavailable. Retry to refresh." : "No verified history found for this project"}
+                        </div>
+                      )}
+
+                      {historyError && (
+                        <div className="pl-10">
+                          <button
+                            onClick={() => fetchedProject && fetchHistory(fetchedProject.projectId)}
+                            disabled={isLoadingHistory}
+                            className="text-[10px] font-bold uppercase tracking-widest text-red-300 hover:text-red-200 disabled:opacity-50"
+                          >
+                            Retry History
+                          </button>
+                          {isHistoryStale && (
+                            <p className="mt-1 text-[10px] uppercase tracking-widest text-amber-300">
+                              Showing stale history data.
+                            </p>
+                          )}
                         </div>
                       )}
 
@@ -2016,6 +2071,18 @@ export function SplitApp() {
                       "Refresh Projects"
                     )}
                   </button>
+                  {projectsListError && (
+                    <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-red-300">
+                        Failed to refresh projects: {projectsListError}
+                      </p>
+                      {isProjectsListStale && (
+                        <p className="mt-1 text-[10px] uppercase tracking-widest text-amber-300">
+                          Showing stale project list data.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {projectsList.length > 0 ? (
@@ -2055,7 +2122,11 @@ export function SplitApp() {
                 ) : (
                   <div className="glass-card rounded-[2.5rem] p-12 text-center">
                     <p className="text-muted text-sm font-medium">
-                      {isLoadingProjectsList ? "Loading projects..." : "No projects loaded yet. Click Refresh Projects to load."}
+                      {isLoadingProjectsList
+                        ? "Loading projects..."
+                        : projectsListError
+                          ? "Could not load projects. Retry refresh."
+                          : "No projects loaded yet. Click Refresh Projects to load."}
                     </p>
                   </div>
                 )}
@@ -2180,7 +2251,24 @@ export function SplitApp() {
                           ))
                         ) : (
                           <div className="pl-10 text-[10px] font-bold uppercase tracking-widest text-muted opacity-40 italic">
-                            No verified history found for this project
+                            {historyError ? "History unavailable. Retry to refresh." : "No verified history found for this project"}
+                          </div>
+                        )}
+
+                        {historyError && (
+                          <div className="pl-10">
+                            <button
+                              onClick={() => fetchedProject && fetchHistory(fetchedProject.projectId)}
+                              disabled={isLoadingHistory}
+                              className="text-[10px] font-bold uppercase tracking-widest text-red-300 hover:text-red-200 disabled:opacity-50"
+                            >
+                              Retry History
+                            </button>
+                            {isHistoryStale && (
+                              <p className="mt-1 text-[10px] uppercase tracking-widest text-amber-300">
+                                Showing stale history data.
+                              </p>
+                            )}
                           </div>
                         )}
 
@@ -2221,7 +2309,7 @@ export function SplitApp() {
 
         {/* Metadata Edit Modal */}
         {isEditingMetadata && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+          <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
             <div className="glass-card w-full max-w-lg rounded-[2.5rem] p-10 animate-in zoom-in-95 duration-200">
               <h2 className="font-display text-2xl mb-8">Edit Project Metadata</h2>
               <div className="space-y-6">
