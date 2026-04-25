@@ -1,6 +1,8 @@
 import { rpc } from "@stellar/stellar-sdk";
 import { getEnv } from "../config/env.js";
 
+import { AppError, ErrorCode, ErrorType } from "../lib/errors.js";
+
 export interface StellarConfig {
   horizonUrl: string;
   sorobanRpcUrl: string;
@@ -9,9 +11,9 @@ export interface StellarConfig {
   simulatorAccount: string;
 }
 
-export class RequestValidationError extends Error {
+export class RequestValidationError extends AppError {
   constructor(message: string) {
-    super(message);
+    super(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, message);
     this.name = "RequestValidationError";
   }
 }

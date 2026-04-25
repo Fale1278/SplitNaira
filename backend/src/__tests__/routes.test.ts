@@ -1,19 +1,63 @@
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { describe, it, expect, vi } from "vitest";
 import request from "supertest";
 import { app } from "../index.js";
 
-vi.mock("../services/stellar.js", () => {
-  class RequestValidationError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "RequestValidationError";
-    }
-  }
+vi.mock("@stellar/stellar-sdk", () => {
   return {
+    Address: {
+      fromString: vi.fn((address) => ({
+        toScVal: () => ({ address }),
+        toString: () => address
+      }))
+    },
+    BASE_FEE: "100",
+    Contract: vi.fn().mockImplementation(() => ({
+      call: vi.fn().mockReturnValue({})
+    })),
+    TransactionBuilder: vi.fn().mockImplementation(() => ({
+      addOperation: vi.fn().mockReturnThis(),
+      setTimeout: vi.fn().mockReturnThis(),
+      build: vi.fn().mockReturnValue({
+        toXDR: () => "test_xdr"
+      })
+    })),
+    nativeToScVal: vi.fn((val) => ({ val })),
+    scValToNative: vi.fn((val) => val),
+    rpc: {
+      Server: vi.fn().mockImplementation(() => ({
+        getAccount: vi.fn().mockResolvedValue({
+          accountId: () => "GD5T6IPRNCKFOHQ3STZ5BTEYI5V6U5U6U5U6U5U6U5U6U5U6U5U6U5U6",
+          sequenceNumber: () => "1",
+          sequence: "1"
+        }),
+        simulateTransaction: vi.fn().mockResolvedValue({ result: { retval: [] } }),
+        prepareTransaction: vi.fn().mockResolvedValue({
+          toXDR: () => "test_xdr",
+          sequence: "1",
+          fee: "100"
+        })
+      }))
+    },
+    xdr: {
+      ScVal: {
+        scvU32: vi.fn(),
+        scvVec: vi.fn()
+      }
+    }
+  };
+});
+
+vi.mock("../services/stellar.js", async (importOriginal) => {
+  const actual = await importOriginal<any>();
+  return {
+    ...actual,
     loadStellarConfig: vi.fn(() => ({
       horizonUrl: "http://horizon",
       sorobanRpcUrl: "http://rpc",
       networkPassphrase: "test",
+      contractId: "CBLASIRZ7CUKC7S5IS3VSNMQGKZ5FTRWLHZZXH7H4YG6ZLRFPJF5H2LR",
+      simulatorAccount: "GD5T6IPRNCKFOHQ3STZ5BTEYI5V6U5U6U5U6U5U6U5U6U5U6U5U6U5U6"
       contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
       simulatorAccount: "test_account"
     })),
@@ -31,6 +75,10 @@ vi.mock("../services/stellar.js", () => {
       }),
       getEvents: vi.fn().mockResolvedValue({ events: [] })
     })),
+    getStellarRpcServer: vi.fn().mockImplementation(() => {
+      const { rpc } = (vi.mocked(await import("@stellar/stellar-sdk")));
+      return new rpc.Server("http://rpc");
+    })
     executeWithRetry: vi.fn(async (fn) => fn()),
     getCached: vi.fn(() => undefined),
     setCached: vi.fn(),
@@ -42,7 +90,14 @@ vi.mock("../services/stellar.js", () => {
   };
 });
 
+
 describe("Route Integration Tests", () => {
+  beforeAll(() => {
+    process.env.SIMULATOR_ACCOUNT = "GD5T6IPRNCKFOHQ3STZ5BTEYI5V6U5U6U5U6U5U6U5U6U5U6U5U6U5U6";
+    process.env.CONTRACT_ID = "CBLASIRZ7CUKC7S5IS3VSNMQGKZ5FTRWLHZZXH7H4YG6ZLRFPJF5H2LR";
+    process.env.SOROBAN_NETWORK_PASSPHRASE = "test";
+  });
+
   describe("GET /", () => {
     it("should return API info", async () => {
       const res = await request(app).get("/");

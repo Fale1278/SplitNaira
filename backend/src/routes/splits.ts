@@ -24,6 +24,25 @@ import {
   READ_CACHE_TTL_MS
 } from "../services/stellar.js";
 
+import { 
+  AppError, 
+  ErrorCode, 
+  ErrorType, 
+  translateSorobanError 
+} from "../lib/errors.js";
+
+function serializeBigInts(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === "bigint") return obj.toString();
+  if (Array.isArray(obj)) return obj.map(serializeBigInts);
+  if (typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [k, serializeBigInts(v)])
+    );
+  }
+  return obj;
+}
+
 export const splitsRouter = Router();
 
 // Strict Stellar address validator used across schemas
@@ -147,11 +166,13 @@ export const updateCollaboratorsSchema = z
     }
   });
 
+const adminTokenSchema = z.object({
 const adminTokenActionSchema = z.object({
   admin: stellarAddressSchema.describe("admin"),
   token: stellarAddressSchema.describe("token")
 });
 
+function toCollaboratorScVal(collaborator: z.infer<typeof collaboratorSchema>) {
 const allowlistQuerySchema = z.object({
   start: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(200).default(100)
@@ -297,6 +318,12 @@ async function buildCreateProjectUnsignedXdr(
     .setTimeout(300)
     .build();
 
+  let preparedTx;
+  try {
+    preparedTx = await server.prepareTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
 
   return {
@@ -415,6 +442,12 @@ async function listProjects(start: number, limit: number) {
     .setTimeout(300)
     .build();
 
+  let simulated;
+  try {
+    simulated = await server.simulateTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const simulated = await executeWithRetry(() => server.simulateTransaction(tx));
   const retval = "result" in simulated ? simulated.result?.retval : undefined;
   if (!retval) {
@@ -452,6 +485,12 @@ async function fetchProjectById(projectId: string) {
     .setTimeout(300)
     .build();
 
+  let simulated;
+  try {
+    simulated = await server.simulateTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const simulated = await executeWithRetry(() => server.simulateTransaction(tx));
   const retval = "result" in simulated ? simulated.result?.retval : undefined;
   if (!retval) {
@@ -473,7 +512,7 @@ interface LockProjectRequest {
 
 async function buildLockProjectUnsignedXdr(input: LockProjectRequest) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -500,6 +539,12 @@ async function buildLockProjectUnsignedXdr(input: LockProjectRequest) {
     .setTimeout(300)
     .build();
 
+  let preparedTx;
+  try {
+    preparedTx = await server.prepareTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
   return {
     xdr: preparedTx.toXDR(),
@@ -522,7 +567,7 @@ interface DepositRequest {
 
 async function buildDepositUnsignedXdr(input: DepositRequest) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -549,6 +594,12 @@ async function buildDepositUnsignedXdr(input: DepositRequest) {
     .setTimeout(300)
     .build();
 
+  let preparedTx;
+  try {
+    preparedTx = await server.prepareTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
   return {
     xdr: preparedTx.toXDR(),
@@ -573,7 +624,7 @@ async function buildUpdateCollaboratorsUnsignedXdr(
   input: UpdateCollaboratorsRequest
 ) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -654,6 +705,12 @@ async function buildUpdateMetadataUnsignedXdr(input: {
     .setTimeout(300)
     .build();
 
+  let preparedTx;
+  try {
+    preparedTx = await server.prepareTransaction(tx);
+  } catch (error) {
+    throw translateSorobanError(error);
+  }
   const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
   return {
     xdr: preparedTx.toXDR(),
@@ -679,27 +736,17 @@ splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) =>
 
     const parsed = listProjectsSchema.safeParse(req.query);
     if (!parsed.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: parsed.error.flatten(),
-        requestId
-      });
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        undefined,
+        parsed.error.flatten()
+      );
     }
 
-    try {
-      const projects = await listProjects(parsed.data.start, parsed.data.limit);
-      return res.status(200).json(projects);
-    } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
-    }
+    const projects = await listProjects(parsed.data.start, parsed.data.limit);
+    return res.status(200).json(serializeBigInts(projects));
   } catch (error) {
     return next(error);
   }
@@ -708,6 +755,17 @@ splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) =>
 splitsRouter.get("/:projectId", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
+    }
+    const projectId = parsedId.data;
     const parsedProjectId = projectIdParamSchema.safeParse(req.params.projectId);
     if (!parsedProjectId.success) {
       return res.status(400).json({
@@ -721,19 +779,43 @@ splitsRouter.get("/:projectId", async (req: Request, res: Response, next: NextFu
 
     const project = await fetchProjectById(projectId);
     if (!project) {
-      return res.status(404).json({
-        error: "not_found",
-        message: `Split project ${projectId} not found.`,
-        requestId
-      });
+      throw new AppError(
+        ErrorType.RPC,
+        ErrorCode.NOT_FOUND,
+        `Split project ${projectId} not found.`
+      );
     }
 
-    return res.status(200).json(project);
+    return res.status(200).json(serializeBigInts(project));
   } catch (error) {
     return next(error);
   }
 });
 
+splitsRouter.post("/:projectId/lock", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const requestId = res.locals.requestId;
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
+    }
+    const projectId = parsedId.data;
+
+    const parsedBody = lockProjectSchema.safeParse(req.body);
+
+    if (!parsedBody.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        { message: "Check owner address." }
+      );
 splitsRouter.get("/admin/allowlist", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
@@ -750,6 +832,9 @@ splitsRouter.get("/admin/allowlist", async (req: Request, res: Response, next: N
     const { start, limit } = parsed.data;
 
     try {
+      const result = await buildLockProjectUnsignedXdr({
+        projectId: projectId,
+        owner: parsedBody.data.owner
       const [adminRetval, countRetval, tokensRetval] = await Promise.all([
         simulateReadOnlyContractCall("get_admin"),
         simulateReadOnlyContractCall("get_allowed_token_count"),
@@ -772,11 +857,7 @@ splitsRouter.get("/admin/allowlist", async (req: Request, res: Response, next: N
       });
     } catch (error) {
       if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
+        throw new AppError(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, error.message);
       }
       throw error;
     }
@@ -785,6 +866,38 @@ splitsRouter.get("/admin/allowlist", async (req: Request, res: Response, next: N
   }
 });
 
+splitsRouter.post("/:projectId/deposit", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const requestId = res.locals.requestId;
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
+    }
+    const projectId = parsedId.data;
+
+    const parsedBody = depositSchema.safeParse(req.body);
+
+    if (!parsedBody.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        { message: "Check deposit details." }
+      );
+    }
+
+    try {
+      const result = await buildDepositUnsignedXdr({
+        projectId: projectId,
+        from: parsedBody.data.from,
+        amount: parsedBody.data.amount
+      });
 splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
@@ -803,11 +916,7 @@ splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next
       return res.status(200).json(result);
     } catch (error) {
       if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
+        throw new AppError(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, error.message);
       }
       throw error;
     }
@@ -816,6 +925,38 @@ splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next
   }
 });
 
+splitsRouter.put("/:projectId/collaborators", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const requestId = res.locals.requestId;
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
+    }
+    const projectId = parsedId.data;
+
+    const parsedBody = updateCollaboratorsSchema.safeParse(req.body);
+
+    if (!parsedBody.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        { message: "Check collaborator list." }
+      );
+    }
+
+    try {
+      const result = await buildUpdateCollaboratorsUnsignedXdr({
+        projectId: projectId,
+        owner: parsedBody.data.owner,
+        collaborators: parsedBody.data.collaborators
+      });
 splitsRouter.post("/admin/disallow-token", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
@@ -834,11 +975,7 @@ splitsRouter.post("/admin/disallow-token", async (req: Request, res: Response, n
       return res.status(200).json(result);
     } catch (error) {
       if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
+        throw new AppError(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, error.message);
       }
       throw error;
     }
@@ -850,6 +987,15 @@ splitsRouter.post("/admin/disallow-token", async (req: Request, res: Response, n
 splitsRouter.post("/:projectId/lock", async (req, res, next) => {
   try {
     const requestId = res.locals.requestId;
+    const parsed = createSplitSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        { message: "Check the provided project details." }
+      );
 
     const parsedParams = projectIdParamSchema.safeParse(req.params.projectId);
     const parsedBody = lockProjectSchema.safeParse(req.body);
@@ -874,11 +1020,7 @@ splitsRouter.post("/:projectId/lock", async (req, res, next) => {
       return res.status(200).json(result);
     } catch (error) {
       if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
+        throw new AppError(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, error.message);
       }
       throw error;
     }
@@ -1054,27 +1196,42 @@ export const distributeSchema = z.object({
 splitsRouter.post("/:projectId/distribute", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
-    const projectIdRaw = req.params.projectId;
-    const projectId = typeof projectIdRaw === "string" ? projectIdRaw.trim() : "";
-    if (!projectId) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "projectId is required",
-        requestId
-      });
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
     }
+    const projectId = parsedId.data;
 
     const parsed = distributeSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: parsed.error.flatten(),
-        requestId
-      });
+      throw new AppError(
+        ErrorType.VALIDATION, 
+        ErrorCode.VALIDATION_ERROR, 
+        "Invalid request payload.",
+        { message: "Check the distribution request body." }
+      );
     }
 
     const config = loadStellarConfig();
+    const server = getStellarRpcServer();
+
+    let sourceAccount;
+    const sourceAddress = parsed.data?.sourceAddress || config.simulatorAccount;
+    try {
+      sourceAccount = await server.getAccount(sourceAddress);
+    } catch {
+      throw new AppError(
+        ErrorType.ACCOUNT_STATE,
+        ErrorCode.ACCOUNT_NOT_FOUND,
+        "Source account not found on selected network",
+        { message: "The account used to trigger distribution must exist and be funded.", action: "Check Source Wallet" }
+      );
     const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
 
     let sourceAccount;
@@ -1427,7 +1584,32 @@ splitsRouter.post("/admin/pause-distributions", async (req: Request, res: Respon
         requestId
       });
     }
+    
+    let preparedTx;
+    try {
+      const contract = new Contract(config.contractId);
+      const tx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: config.networkPassphrase
+      })
+        .addOperation(
+          contract.call("distribute", nativeToScVal(projectId, { type: "symbol" }))
+        )
+        .setTimeout(300)
+        .build();
 
+      preparedTx = await server.prepareTransaction(tx);
+    } catch (error) {
+      throw translateSorobanError(error);
+    }
+
+    return res.status(200).json({
+      xdr: preparedTx.toXDR(),
+      metadata: {
+        contractId: config.contractId,
+        networkPassphrase: config.networkPassphrase,
+        sourceAccount: sourceAddress,
+        operation: "distribute"
     try {
       const result = await buildPauseDistributionsUnsignedXdr(parsed.data);
       return res.status(200).json(result);
@@ -1449,6 +1631,25 @@ splitsRouter.post("/admin/pause-distributions", async (req: Request, res: Respon
 splitsRouter.post("/admin/unpause-distributions", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
+    }
+    const projectId = parsedId.data;
+    const { address } = req.params;
+
+    if (!address) {
+      throw new AppError(
+        ErrorType.VALIDATION, 
+        ErrorCode.VALIDATION_ERROR, 
+        "address is required"
+      );
     const parsed = pauseDistributionsSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({
@@ -1460,6 +1661,47 @@ splitsRouter.post("/admin/unpause-distributions", async (req: Request, res: Resp
     }
 
     try {
+      sourceAccount = await server.getAccount(config.simulatorAccount);
+    } catch {
+      throw new AppError(
+        ErrorType.ACCOUNT_STATE,
+        ErrorCode.ACCOUNT_NOT_FOUND,
+        "Simulator account not found",
+        { message: "The backend simulator account is not configured correctly." }
+      );
+    }
+
+    let simulated;
+    try {
+      const contract = new Contract(config.contractId);
+      const tx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: config.networkPassphrase
+      })
+        .addOperation(
+          contract.call(
+            "get_claimable",
+            nativeToScVal(projectId, { type: "symbol" }),
+            Address.fromString(address).toScVal()
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      simulated = await server.simulateTransaction(tx);
+    } catch (error) {
+      throw translateSorobanError(error);
+    }
+    const retval = "result" in simulated ? simulated.result?.retval : undefined;
+    if (!retval) {
+      throw new AppError(
+        ErrorType.RPC,
+        ErrorCode.NOT_FOUND,
+        "Claimable info not found"
+      );
+    }
+
+    return res.status(200).json(serializeBigInts(scValToNative(retval)));
       const result = await buildUnpauseDistributionsUnsignedXdr(parsed.data);
       return res.status(200).json(result);
     } catch (error) {
@@ -1492,24 +1734,26 @@ function _toEventTopic(value: string) {
 splitsRouter.get("/:projectId/history", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const requestId = res.locals.requestId;
-    const projectIdRaw = req.params.projectId;
-    const projectId = typeof projectIdRaw === "string" ? projectIdRaw.trim() : "";
-    if (!projectId) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "projectId is required",
-        requestId
-      });
+    const parsedId = projectIdParamSchema.safeParse(req.params.projectId);
+    if (!parsedId.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid projectId format.",
+        undefined,
+        parsedId.error.flatten()
+      );
     }
+    const projectId = parsedId.data;
 
     const parsedQuery = historyQuerySchema.safeParse(req.query);
     if (!parsedQuery.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid query parameters.",
-        details: parsedQuery.error.flatten(),
-        requestId
-      });
+      throw new AppError(
+        ErrorType.VALIDATION, 
+        ErrorCode.VALIDATION_ERROR, 
+        "Invalid query parameters.",
+        { message: "Check cursor and limit parameters." }
+      );
     }
     const { cursor, limit } = parsedQuery.data;
 
@@ -1576,9 +1820,102 @@ splitsRouter.get("/:projectId/history", async (req: Request, res: Response, next
       ((paymentEventResponse as any)?.cursor as string | undefined) ||
       null;
 
+    return res.status(200).json(serializeBigInts(events));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+async function buildAdminTokenXdr(
+  operation: "allow_token" | "disallow_token",
+  input: z.infer<typeof adminTokenSchema>
+) {
+  const config = loadStellarConfig();
+  const server = getStellarRpcServer();
+
+  let adminAccount;
+  try {
+    adminAccount = await server.getAccount(input.admin);
+  } catch {
+    throw new AppError(
+      ErrorType.VALIDATION,
+      ErrorCode.VALIDATION_ERROR,
+      "admin account not found on selected network"
+    );
+  }
+
+  const contract = new Contract(config.contractId);
+  const tx = new TransactionBuilder(adminAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: config.networkPassphrase
+  })
+    .addOperation(
+      contract.call(
+        operation,
+        new Address(input.admin).toScVal(),
+        new Address(input.token).toScVal()
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  return tx.toXDR();
+}
+
+splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = adminTokenSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        undefined,
+        parsed.error.flatten()
+      );
+    }
+
+    const xdr = await buildAdminTokenXdr("allow_token", parsed.data);
+    const config = loadStellarConfig();
+
     return res.status(200).json({
-      items: events,
-      nextCursor
+      xdr,
+      metadata: {
+        contractId: config.contractId,
+        networkPassphrase: config.networkPassphrase,
+        sourceAccount: parsed.data.admin,
+        operation: "allow_token"
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+splitsRouter.post("/admin/disallow-token", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = adminTokenSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        ErrorType.VALIDATION,
+        ErrorCode.VALIDATION_ERROR,
+        "Invalid request payload.",
+        undefined,
+        parsed.error.flatten()
+      );
+    }
+
+    const xdr = await buildAdminTokenXdr("disallow_token", parsed.data);
+    const config = loadStellarConfig();
+
+    return res.status(200).json({
+      xdr,
+      metadata: {
+        contractId: config.contractId,
+        networkPassphrase: config.networkPassphrase,
+        sourceAccount: parsed.data.admin,
+        operation: "disallow_token"
+      }
     });
   } catch (error) {
     return next(error);
