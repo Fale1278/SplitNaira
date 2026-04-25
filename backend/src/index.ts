@@ -10,6 +10,8 @@ import { splitsRouter } from "./routes/splits.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { validateEnv, printEnvDiagnostics } from "./config/env.js";
+import { initDatabase, closeDatabase } from "./services/database.js";
+import { logger } from "./services/logger.js";
 
 dotenv.config();
 
@@ -83,28 +85,30 @@ if (process.env.NODE_ENV !== "test") {
       }
       validateEnv();
 
+      await initDatabase();
+
       const port = Number(process.env.PORT ?? 3001);
       const server = app.listen(port, () => {
-        console.log(`[startup] SplitNaira API listening on :${port}`);
+        logger.info(`Server started on port ${port}`);
       });
 
       // Graceful shutdown
-      const shutdown = (signal: NodeJS.Signals) => {
-        console.log(`[shutdown] Received ${signal}. Closing server...`);
-        // Stop accepting new connections and wait for in-flight to complete
+      const shutdown = async (signal: NodeJS.Signals) => {
+        logger.info(`Received ${signal}. Shutting down...`);
+        await closeDatabase();
         server.close((err?: Error) => {
           if (err) {
-            console.error("[shutdown] Error during server close:", err);
+            logger.error("Error during server close", { error: err });
             process.exit(1);
           }
-          console.log("[shutdown] Server closed cleanly. Exiting.");
+          logger.info("Server closed cleanly");
           process.exit(0);
         });
 
         // Fallback: force exit after timeout
         const forceTimeoutMs = Number(process.env.SHUTDOWN_FORCE_TIMEOUT_MS ?? 10_000);
         setTimeout(() => {
-          console.warn("[shutdown] Force exiting after timeout.");
+          logger.warn("Force exiting after timeout");
           process.exit(1);
         }, forceTimeoutMs).unref();
       };
@@ -114,16 +118,15 @@ if (process.env.NODE_ENV !== "test") {
 
       // Fatal error handlers
       process.on("unhandledRejection", (reason) => {
-        console.error("[fatal] Unhandled promise rejection:", reason);
-        // Exit to allow orchestrator to restart
+        logger.error("Unhandled promise rejection", { reason });
         process.exit(1);
       });
       process.on("uncaughtException", (err) => {
-        console.error("[fatal] Uncaught exception:", err);
+        logger.error("Uncaught exception", { error: err });
         process.exit(1);
       });
     } catch (err) {
-      console.error("[startup] Failed to start server:", err);
+      logger.error("Failed to start server", { error: err });
       process.exit(1);
     }
   };
