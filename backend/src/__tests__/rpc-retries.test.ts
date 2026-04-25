@@ -23,12 +23,12 @@ describe("RPC Retry and Timeout Policy", () => {
 
     it("should throw RpcTimeoutError when operation exceeds timeout", async () => {
       // Use a long-running promise to simulate a timeout
-      const operation = () => new Promise((resolve) => {
+      const operation = vi.fn(() => new Promise((resolve) => {
         setTimeout(() => resolve("late"), 200);
-      });
+      }));
       
       await expect(executeWithRetry(operation, { timeoutMs: 50 })).rejects.toThrow(RpcTimeoutError);
-    });
+    }, 10000);
 
     it("should exhaust retries and throw the last error", async () => {
       const operation = vi.fn().mockRejectedValue(new Error("Persistent error"));

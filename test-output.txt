@@ -1,0 +1,20 @@
+
+> splitnaira-workspace@1.0.0 test
+> npm run test:frontend && npm run test:backend && npm run test:contracts
+
+
+> splitnaira-workspace@1.0.0 test:frontend
+> cd frontend && npm run test
+
+
+> splitnaira-frontend@0.1.0 test
+> vitest run
+
+sh: 1: vitest: not found
+npm error Lifecycle script `test` failed with error:
+npm error code 127
+npm error path /home/semicolon/Documents/Drip/SplitNaira/frontend
+npm error workspace splitnaira-frontend@0.1.0
+npm error location /home/semicolon/Documents/Drip/SplitNaira/frontend
+npm error command failed
+npm error command sh -c vitest run
