@@ -342,6 +342,15 @@ describe("Issue #174: owner gating and lock lifecycle", () => {
 describe("SplitApp admin allowlist flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.mockUseWallet.mockReturnValue({
+      wallet: {
+        connected: true,
+        address: "GOWNER123",
+        network: "testnet"
+      },
+      connect: vi.fn(),
+      refresh: vi.fn()
+    });
     mocks.mockGetFreighterWalletState.mockResolvedValue({
       connected: true,
       address: "GOWNER123",
