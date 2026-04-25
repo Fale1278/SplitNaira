@@ -64,56 +64,44 @@ export class ApiError extends Error {
   }
 }
 
-function toErrorMessage(status: number, payload: unknown, fallback: string) {
-  if (payload && typeof payload === "object") {
-    const errorPayload = payload as ApiErrorResponse;
-    if (errorPayload.message) {
-      let msg = errorPayload.message;
-      if (errorPayload.remediation) {
-        msg += `\n\nSuggestion: ${errorPayload.remediation.message}`;
-      }
-      return msg;
-    }
+async function handleResponse<T>(response: Response, fallback: string): Promise<T> {
+  const body = (await response.json().catch(() => null)) as unknown;
+  
+  if (!response.ok) {
+    const errorPayload = body as ApiErrorResponse;
+    throw new ApiError(response.status, errorPayload, fallback);
   }
-  return `${fallback} (status ${status})`;
+  
+  return body as T;
 }
+
 export async function buildCreateSplitXdr(payload: CreateSplitPayload): Promise<BuildSplitResponse> {
   const response = await fetch(`${API_BASE_URL}/splits`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw new Error(toErrorMessage(response.status, body, "Failed to build split transaction"));
-  }
-  return body as BuildSplitResponse;
+  return handleResponse<BuildSplitResponse>(response, "Failed to build split transaction");
 }
-// SplitProject is imported from ./stellar
+
 export async function buildDistributeXdr(projectId: string, sourceAddress: string): Promise<BuildSplitResponse> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}/distribute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sourceAddress })
   });
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw new Error(toErrorMessage(response.status, body, "Failed to build distribution transaction"));
-  }
-  return body as BuildSplitResponse;
+  return handleResponse<BuildSplitResponse>(response, "Failed to build distribution transaction");
 }
+
 export async function buildLockProjectXdr(projectId: string, owner: string): Promise<BuildSplitResponse> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}/lock`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ owner })
   });
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw new Error(toErrorMessage(response.status, body, "Failed to build lock transaction"));
-  }
-  return body as BuildSplitResponse;
+  return handleResponse<BuildSplitResponse>(response, "Failed to build lock transaction");
 }
+
 export async function buildDepositXdr(
   projectId: string,
   from: string,
@@ -124,26 +112,17 @@ export async function buildDepositXdr(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ from, amount })
   });
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw new Error(toErrorMessage(response.status, body, "Failed to build deposit transaction"));
-  }
-  return body as BuildSplitResponse;
+  return handleResponse<BuildSplitResponse>(response, "Failed to build deposit transaction");
 }
+
 export async function getSplit(projectId: string): Promise<SplitProject> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}`);
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    throw new Error(toErrorMessage(response.status, body, "Failed to fetch split project"));
-  }
-  return body as SplitProject;
+  return handleResponse<SplitProject>(response, "Failed to fetch split project");
 }
+
 export async function getProjectHistory(
   projectId: string,
 ): Promise<ProjectHistoryItem[]> {
   const response = await fetch(`${API_BASE_URL}/splits/${encodeURIComponent(projectId)}/history`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch project history");
-  }
-  return (await response.json()) as ProjectHistoryItem[];
-}
+  return handleResponse<ProjectHistoryItem[]>(response, "Failed to fetch project history");
+}

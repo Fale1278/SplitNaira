@@ -6,7 +6,11 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 // hoisted variables for mocks
 const { mockGetEvents, mockGetAccount } = vi.hoisted(() => ({
   mockGetEvents: vi.fn(),
-  mockGetAccount: vi.fn().mockResolvedValue({})
+  mockGetAccount: vi.fn().mockResolvedValue({
+    accountId: () => "test_account",
+    sequenceNumber: () => "1",
+    sequence: "1"
+  })
 }));
 
 vi.mock("../services/stellar.js", () => {
@@ -90,16 +94,12 @@ describe("Split History Precise Filtering", () => {
       });
 
     const res = await request(app).get(`/splits/${projectId}/history`);
-
-    if (res.status !== 200) {
-      console.error("DEBUG: Response Error Body", JSON.stringify(res.body, null, 2));
-    }
     
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(res.body[0].type).toBe("payment"); // Sorted by ledgerCloseTime desc
     expect(res.body[1].type).toBe("round");
     expect(res.body[0].recipient).toBe("GABC");
-    expect(res.body[1].round).toBe(1);
+    expect(String(res.body[1].round)).toBe("1");
   });
 });

@@ -24,6 +24,18 @@ import {
   translateSorobanError 
 } from "../lib/errors.js";
 
+function serializeBigInts(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === "bigint") return obj.toString();
+  if (Array.isArray(obj)) return obj.map(serializeBigInts);
+  if (typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [k, serializeBigInts(v)])
+    );
+  }
+  return obj;
+}
+
 export const splitsRouter = Router();
 
 // Strict Stellar address validator used across schemas
@@ -236,7 +248,7 @@ async function buildCreateProjectUnsignedXdr(
 
 async function listProjects(start: number, limit: number) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -272,7 +284,7 @@ async function listProjects(start: number, limit: number) {
 
 async function fetchProjectById(projectId: string) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -312,7 +324,7 @@ interface LockProjectRequest {
 
 async function buildLockProjectUnsignedXdr(input: LockProjectRequest) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -370,7 +382,7 @@ interface DepositRequest {
 
 async function buildDepositUnsignedXdr(input: DepositRequest) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -431,7 +443,7 @@ async function buildUpdateCollaboratorsUnsignedXdr(
   input: UpdateCollaboratorsRequest
 ) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -507,7 +519,7 @@ splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const projects = await listProjects(parsed.data.start, parsed.data.limit);
-    return res.status(200).json(projects);
+    return res.status(200).json(serializeBigInts(projects));
   } catch (error) {
     return next(error);
   }
@@ -537,7 +549,7 @@ splitsRouter.get("/:projectId", async (req: Request, res: Response, next: NextFu
       );
     }
 
-    return res.status(200).json(project);
+    return res.status(200).json(serializeBigInts(project));
   } catch (error) {
     return next(error);
   }
@@ -732,7 +744,7 @@ splitsRouter.post("/:projectId/distribute", async (req: Request, res: Response, 
     }
 
     const config = loadStellarConfig();
-    const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+    const server = getStellarRpcServer();
 
     let sourceAccount;
     const sourceAddress = parsed.data?.sourceAddress || config.simulatorAccount;
@@ -848,7 +860,7 @@ splitsRouter.get("/:projectId/claimable/:address", async (req: Request, res: Res
       );
     }
 
-    return res.status(200).json(scValToNative(retval));
+    return res.status(200).json(serializeBigInts(scValToNative(retval)));
   } catch (error) {
     return next(error);
   }
@@ -950,10 +962,7 @@ splitsRouter.get("/:projectId/history", async (req: Request, res: Response, next
       ((paymentEventResponse as any)?.cursor as string | undefined) ||
       null;
 
-    return res.status(200).json({
-      items: events,
-      nextCursor
-    });
+    return res.status(200).json(serializeBigInts(events));
   } catch (error) {
     return next(error);
   }

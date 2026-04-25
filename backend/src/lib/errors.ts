@@ -31,11 +31,13 @@ export enum ErrorCode {
   // Account/Chain State
   ACCOUNT_NOT_FOUND = "ACCOUNT_NOT_FOUND",
   INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS",
+  CONTRACT_NOT_FOUND = "CONTRACT_NOT_FOUND",
 
   // System/Other
   VALIDATION_ERROR = "VALIDATION_ERROR",
   SIMULATION_FAILED = "SIMULATION_FAILED",
   RPC_CONNECTIVITY = "RPC_CONNECTIVITY",
+  RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
   INTERNAL_ERROR = "INTERNAL_ERROR"
 }
 
@@ -142,8 +144,10 @@ const CONTRACT_ERROR_MAP: Record<number, { code: ErrorCode; message: string; rem
 };
 
 export function translateSorobanError(err: any): AppError {
+  const errorMessage = err?.message || String(err);
+
   // 1. Handle HTTP/RPC connectivity issues
-  if (err?.message?.includes("fetch failed") || err?.message?.includes("ECONNREFUSED")) {
+  if (errorMessage.includes("fetch failed") || errorMessage.includes("ECONNREFUSED") || errorMessage.includes("Network Error")) {
     return new AppError(
       ErrorType.RPC,
       ErrorCode.RPC_CONNECTIVITY,
@@ -152,14 +156,12 @@ export function translateSorobanError(err: any): AppError {
     );
   }
 
-  // 2. Handle Simulation Failures (Contract Errors)
-  // When using server.prepareTransaction or server.simulateTransaction
+  // 2. Handle Simulation Failures (Host & Contract Errors)
   const simulationResult = err?.simulationResult || err?.response?.results?.[0];
+  const rawError = simulationResult?.error || errorMessage;
   
-  if (simulationResult?.error) {
-    const rawError = simulationResult.error;
-    // Extract contract error code if available
-    // Format is often "HostError: Error(Contract, Code(1))"
+  if (rawError) {
+    // Contract errors: Error(Contract, Code(1))
     const contractErrorCodeMatch = rawError.match(/Error\(Contract, Code\((\d+)\)\)/);
     if (contractErrorCodeMatch) {
       const code = parseInt(contractErrorCodeMatch[1], 10);
@@ -175,33 +177,69 @@ export function translateSorobanError(err: any): AppError {
       }
     }
 
-    return new AppError(
-      ErrorType.RPC,
-      ErrorCode.SIMULATION_FAILED,
-      `Transaction simulation failed: ${rawError}`,
-      { message: "The transaction would fail if submitted. Check your parameters.", action: "Review Inputs" },
-      { rawError }
-    );
-  }
+    // Auth failures: Error(Auth, Code(1))
+    if (rawError.includes("Error(Auth,")) {
+      return new AppError(
+        ErrorType.AUTH,
+        ErrorCode.UNAUTHORIZED,
+        "Stellar authorization failed",
+        { message: "The transaction signature or authorization is invalid.", action: "Re-authenticate Wallet" },
+        { rawError }
+      );
+    }
 
-  // 3. Handle specific error messages from SDK
-  if (err?.message?.includes("not found")) {
-    if (err.message.includes("account")) {
+    // Storage / Missing Contract: Error(Storage, Code(MissingValue))
+    if (rawError.includes("Error(Storage, Code(MissingValue))")) {
       return new AppError(
         ErrorType.ACCOUNT_STATE,
-        ErrorCode.ACCOUNT_NOT_FOUND,
-        "Account not found on-chain",
-        { message: "The provided account does not exist or has not been funded.", action: "Fund Account" }
+        ErrorCode.CONTRACT_NOT_FOUND,
+        "Contract or state value not found",
+        { message: "The contract or required data is missing from the network.", action: "Verify Deployment" },
+        { rawError }
+      );
+    }
+
+    // Resource limits: Error(Budget, ...)
+    if (rawError.includes("Error(Budget,")) {
+      return new AppError(
+        ErrorType.RPC,
+        ErrorCode.RESOURCE_LIMIT_EXCEEDED,
+        "Soroban resource limit exceeded",
+        { message: "The transaction requires more resources than allowed.", action: "Increase Fees" },
+        { rawError }
       );
     }
   }
+
+  // 3. Handle specific account errors
+  if (errorMessage.includes("account not found") || errorMessage.includes("op_no_trust")) {
+    return new AppError(
+      ErrorType.ACCOUNT_STATE,
+      ErrorCode.ACCOUNT_NOT_FOUND,
+      "Stellar account not found or missing trustline",
+      { message: "Ensure your account is funded and has a trustline for the token.", action: "Fund Account" }
+    );
+  }
+
+  // 4. Handle generic "not found" which might be a project or contract
+  if (errorMessage.includes("not found")) {
+    return new AppError(
+      ErrorType.ACCOUNT_STATE,
+      ErrorCode.CONTRACT_NOT_FOUND,
+      "Resource not found",
+      { message: "The requested resource could not be found on the network.", action: "Check Identifier" },
+      { originalError: err }
+    );
+  }
+
 
   // 4. Default Internal Error
   return new AppError(
     ErrorType.INTERNAL,
     ErrorCode.INTERNAL_ERROR,
-    err.message || "An unexpected error occurred",
+    errorMessage || "An unexpected error occurred",
     { message: "Our team has been notified. Please try again later." },
-    { stack: err.stack }
+    { stack: err.stack, originalError: err }
   );
 }
+
