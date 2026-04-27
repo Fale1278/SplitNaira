@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import "@testing-library/jest-dom";
 
 import { SplitApp } from "./split-app";
 import { ToastProvider } from "./toast-provider";
@@ -214,7 +215,9 @@ describe("SplitApp lock project flow", () => {
 
     expect(within(dialog).getByRole("button", { name: "Locking..." })).toHaveProperty("disabled", true);
 
-    resolveLock?.();
+    if (resolveLock) {
+      (resolveLock as any)();
+    }
     await waitFor(() => {
       expect(mocks.mockBuildLockProjectXdr).toHaveBeenCalledWith("project_1", "GOWNER123");
     });

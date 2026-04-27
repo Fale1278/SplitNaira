@@ -8,12 +8,7 @@ import { z } from "zod";
  */
 const frontendEnvSchema = z.object({
   NEXT_PUBLIC_STELLAR_NETWORK: z
-    .enum(["testnet", "mainnet"], {
-      errorMap: () => ({
-        message:
-          'NEXT_PUBLIC_STELLAR_NETWORK must be "testnet" or "mainnet"'
-      })
-    })
+    .enum(["testnet", "mainnet"])
     .default("testnet"),
 
   NEXT_PUBLIC_SOROBAN_RPC_URL: z
