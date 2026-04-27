@@ -320,6 +320,17 @@
           "nextCursor": { "type": "string", "nullable": true, "example": "cursor123" }
         },
         "additionalProperties": false
+      },
+      "ListProjectsResponse": {
+        "type": "object",
+        "required": ["items", "total", "start", "limit"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/SplitProject" } },
+          "total": { "type": "integer", "example": 100 },
+          "start": { "type": "integer", "example": 0 },
+          "limit": { "type": "integer", "example": 10 }
+        },
+        "additionalProperties": false
       }
     }
   },
@@ -661,33 +672,45 @@
           {
             "name": "start",
             "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "example": 0
-            }
+            "schema": { "type": "integer", "default": 0, "example": 0 }
           },
           {
             "name": "limit",
             "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 10,
-              "minimum": 1,
-              "maximum": 100,
-              "example": 10
-            }
+            "schema": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100, "example": 10 }
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["title", "totalDistributed", "distributionRound", "projectId"], "default": "projectId" }
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" }
+          },
+          {
+            "name": "projectType",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "owner",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "locked",
+            "in": "query",
+            "schema": { "type": "boolean" }
           }
         ],
         "responses": {
           "200": {
-            "description": "List of projects",
+            "description": "Paginated list of projects",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/SplitProject" }
-                }
+                "schema": { "$ref": "#/components/schemas/ListProjectsResponse" }
               }
             }
           },

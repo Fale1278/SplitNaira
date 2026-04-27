@@ -296,10 +296,47 @@ async function buildCreateProjectUnsignedXdr(
   };
 }
 
-async function listProjects(start: number, limit: number) {
+async function getProjectCount(): Promise<number> {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
+  const contract = new Contract(config.contractId);
 
+  let sourceAccount;
+  try {
+    sourceAccount = await executeWithRetry(() => server.getAccount(config.simulatorAccount));
+  } catch {
+    return 0;
+  }
+
+  const tx = new TransactionBuilder(sourceAccount, {
+    fee: BASE_FEE,
+    networkPassphrase: config.networkPassphrase
+  })
+    .addOperation(contract.call("get_project_count"))
+    .setTimeout(300)
+    .build();
+
+  const simulated = await executeWithRetry(() => server.simulateTransaction(tx));
+  const retval = "result" in simulated ? simulated.result?.retval : undefined;
+  if (!retval) return 0;
+
+  return Number(scValToNative(retval));
+}
+
+async function listProjects(params: z.infer<typeof listProjectsSchema>) {
+  const { start, limit, sortBy, sortOrder, projectType, owner, locked } = params;
+  const config = loadStellarConfig();
+  const server = getStellarRpcServer();
+
+  const total = await getProjectCount();
+  if (total === 0) {
+    return { items: [], total: 0 };
+  }
+
+  // To support filtering and sorting on the server-side while the contract only supports
+  // sequential listing, we fetch all project IDs and then filter/sort.
+  // Note: For a production app with thousands of projects, this should be indexed in a DB.
+  
   let sourceAccount;
   try {
     sourceAccount = await executeWithRetry(() => server.getAccount(config.simulatorAccount));
@@ -308,23 +345,71 @@ async function listProjects(start: number, limit: number) {
   }
 
   const contract = new Contract(config.contractId);
+  
+  // Fetch all projects to apply filtering/sorting
+  // We use the contract's list_projects with the total count as limit
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
     networkPassphrase: config.networkPassphrase
   })
     .addOperation(
-      contract.call("list_projects", xdr.ScVal.scvU32(start), xdr.ScVal.scvU32(limit))
+      contract.call("list_projects", xdr.ScVal.scvU32(0), xdr.ScVal.scvU32(total))
     )
     .setTimeout(300)
     .build();
 
   const simulated = await executeWithRetry(() => server.simulateTransaction(tx));
   const retval = "result" in simulated ? simulated.result?.retval : undefined;
+  
   if (!retval) {
-    return [];
+    return { items: [], total: 0 };
   }
 
-  return scValToNative(retval) as unknown[];
+  let projects = scValToNative(retval) as any[];
+
+  // Apply filtering
+  if (projectType) {
+    projects = projects.filter(p => p.projectType.toLowerCase() === projectType.toLowerCase());
+  }
+  if (owner) {
+    projects = projects.filter(p => p.owner === owner);
+  }
+  if (locked !== undefined) {
+    projects = projects.filter(p => p.locked === locked);
+  }
+
+  // Apply sorting
+  projects.sort((a, b) => {
+    let valA = a[sortBy];
+    let valB = b[sortBy];
+
+    // Handle string comparison
+    if (typeof valA === "string") {
+      valA = valA.toLowerCase();
+      valB = valB.toLowerCase();
+    }
+    
+    // Handle numeric strings (totalDistributed)
+    if (sortBy === "totalDistributed") {
+      const numA = BigInt(valA);
+      const numB = BigInt(valB);
+      return sortOrder === "asc" ? (numA < numB ? -1 : 1) : (numA > numB ? -1 : 1);
+    }
+
+    if (valA < valB) return sortOrder === "asc" ? -1 : 1;
+    if (valA > valB) return sortOrder === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  const filteredTotal = projects.length;
+  const paginatedProjects = projects.slice(start, start + limit);
+
+  return {
+    items: paginatedProjects,
+    total: filteredTotal,
+    start,
+    limit
+  };
 }
 
 async function fetchProjectById(projectId: string) {
@@ -561,7 +646,12 @@ async function buildUpdateMetadataUnsignedXdr(input: {
 
 export const listProjectsSchema = z.object({
   start: z.coerce.number().int().min(0).default(0),
-  limit: z.coerce.number().int().min(1).max(100).default(10)
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  sortBy: z.enum(["title", "totalDistributed", "distributionRound", "projectId"]).default("projectId"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+  projectType: z.string().optional(),
+  owner: z.string().optional(),
+  locked: z.preprocess((val) => val === "true" || val === true, z.boolean()).optional()
 });
 
 splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) => {
@@ -579,8 +669,8 @@ splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) =>
     }
 
     try {
-      const projects = await listProjects(parsed.data.start, parsed.data.limit);
-      return res.status(200).json(projects);
+      const result = await listProjects(parsed.data);
+      return res.status(200).json(result);
     } catch (error) {
       if (error instanceof RequestValidationError) {
         return res.status(400).json({

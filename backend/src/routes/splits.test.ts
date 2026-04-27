@@ -178,13 +178,22 @@ describe("splits routes integration", () => {
     expect(getAccountMock).toHaveBeenCalledWith("GDISP");
   });
 
-  it("lists split projects", async () => {
+  it("lists split projects with pagination metadata", async () => {
     getAccountMock.mockResolvedValue({ accountId: "GSIM" });
-    simulateTransactionMock.mockResolvedValue({
+    
+    // Mock get_project_count response
+    simulateTransactionMock.mockResolvedValueOnce({
+      result: {
+        retval: 2
+      }
+    });
+
+    // Mock list_projects response
+    simulateTransactionMock.mockResolvedValueOnce({
       result: {
         retval: [
-          { projectId: "project_1" },
-          { projectId: "project_2" }
+          { projectId: "project_1", projectType: "music", totalDistributed: "0" },
+          { projectId: "project_2", projectType: "art", totalDistributed: "100" }
         ]
       }
     });
@@ -193,12 +202,67 @@ describe("splits routes integration", () => {
 
     const response = await request(app).get("/splits?start=0&limit=10").expect(200);
 
-    expect(response.body).toEqual([
-      { projectId: "project_1" },
-      { projectId: "project_2" }
-    ]);
+    expect(response.body).toMatchObject({
+      items: [
+        { projectId: "project_2" },
+        { projectId: "project_1" }
+      ],
+      total: 2,
+      start: 0,
+      limit: 10
+    });
 
     expect(getAccountMock).toHaveBeenCalledWith("GTESTSIMULATOR");
+    expect(simulateTransactionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("filters projects by type", async () => {
+    getAccountMock.mockResolvedValue({ accountId: "GSIM" });
+    
+    simulateTransactionMock.mockResolvedValueOnce({
+      result: { retval: 2 }
+    });
+
+    simulateTransactionMock.mockResolvedValueOnce({
+      result: {
+        retval: [
+          { projectId: "project_1", projectType: "music", totalDistributed: "0" },
+          { projectId: "project_2", projectType: "art", totalDistributed: "100" }
+        ]
+      }
+    });
+
+    const app = createApp();
+
+    const response = await request(app).get("/splits?projectType=music").expect(200);
+
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0].projectId).toBe("project_1");
+    expect(response.body.total).toBe(1);
+  });
+
+  it("sorts projects by totalDistributed desc", async () => {
+    getAccountMock.mockResolvedValue({ accountId: "GSIM" });
+    
+    simulateTransactionMock.mockResolvedValueOnce({
+      result: { retval: 2 }
+    });
+
+    simulateTransactionMock.mockResolvedValueOnce({
+      result: {
+        retval: [
+          { projectId: "project_1", projectType: "music", totalDistributed: "0" },
+          { projectId: "project_2", projectType: "art", totalDistributed: "100" }
+        ]
+      }
+    });
+
+    const app = createApp();
+
+    const response = await request(app).get("/splits?sortBy=totalDistributed&sortOrder=desc").expect(200);
+
+    expect(response.body.items[0].projectId).toBe("project_2");
+    expect(response.body.items[1].projectId).toBe("project_1");
   });
 
   it("fetches a project by id", async () => {
