@@ -13,35 +13,33 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CI: true
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --no-audit --no-fund
-      - run: npm run lint -- --max-warnings=10
-      - run: npm run build
-      - run: npm run test
+      - run: npm i --no-audit --no-fund
+      - run: npm run lint -- -w frontend --max-warnings=10
+      - run: npm run build -w frontend
+      - run: npm run test -w frontend
 
   backend:
     runs-on: ubuntu-latest
     env:
       CI: true
       NODE_ENV: test
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+      - run: npm i --no-audit --no-fund
+      - run: npm run deps:check -w backend
+      - run: npm run lint -w backend
+      - run: npm run build -w backend
+      - run: npm run test -w backend -- --reporter=verbose
           cache-dependency-path: backend/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run deps:check

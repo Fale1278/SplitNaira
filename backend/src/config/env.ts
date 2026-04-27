@@ -21,6 +21,15 @@ const backendEnvSchema = z.object({
 
   CORS_ORIGIN: z.string().optional(),
 
+  LOG_LEVEL: z.string().optional().default("info"),
+
+  DATABASE_URL: z
+    .string({
+      required_error:
+        "DATABASE_URL is required — set it to the PostgreSQL connection string, e.g. postgresql://user:pass@localhost:5432/db"
+    })
+    .url("DATABASE_URL must be a valid PostgreSQL connection string"),
+
   HORIZON_URL: z
     .string({
       required_error:
@@ -155,6 +164,8 @@ export function printEnvDiagnostics(): void {
     { key: "NODE_ENV", required: false },
     { key: "PORT", required: false },
     { key: "CORS_ORIGIN", required: false },
+    { key: "LOG_LEVEL", required: false },
+    { key: "DATABASE_URL", required: true },
     { key: "HORIZON_URL", required: true },
     { key: "SOROBAN_RPC_URL", required: true },
     { key: "SOROBAN_NETWORK_PASSPHRASE", required: true },

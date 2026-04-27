@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useNetworkGuard } from "./useNetworkGuard";
+import { clearEnvCache } from "../lib/env";
 import type { WalletState } from "../lib/freighter";
 
 // ─── Mock env ─────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
+  clearEnvCache();
   vi.stubEnv("NEXT_PUBLIC_STELLAR_NETWORK", "testnet");
 });
 
@@ -60,6 +62,7 @@ describe("useNetworkGuard", () => {
 
   it("normalises mainnet -> public for comparison", () => {
     vi.stubEnv("NEXT_PUBLIC_STELLAR_NETWORK", "mainnet");
+    clearEnvCache();
     const { result } = renderHook(() =>
       useNetworkGuard(wallet({ network: "PUBLIC" })),
     );

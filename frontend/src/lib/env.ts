@@ -21,6 +21,10 @@ const frontendEnvSchema = z.object({
     .url(
       "NEXT_PUBLIC_SOROBAN_RPC_URL must be a valid URL, e.g. https://soroban-testnet.stellar.org"
     )
+    .refine(
+      (url) => url.startsWith("http://") || url.startsWith("https://"),
+      "Must use http:// or https:// scheme"
+    )
     .default("https://soroban-testnet.stellar.org"),
 
   NEXT_PUBLIC_HORIZON_URL: z
@@ -28,12 +32,20 @@ const frontendEnvSchema = z.object({
     .url(
       "NEXT_PUBLIC_HORIZON_URL must be a valid URL, e.g. https://horizon-testnet.stellar.org"
     )
+    .refine(
+      (url) => url.startsWith("http://") || url.startsWith("https://"),
+      "Must use http:// or https:// scheme"
+    )
     .default("https://horizon-testnet.stellar.org"),
 
   NEXT_PUBLIC_API_BASE_URL: z
     .string()
     .url(
       "NEXT_PUBLIC_API_BASE_URL must be a valid URL, e.g. http://localhost:3001"
+    )
+    .refine(
+      (url) => url.startsWith("http://") || url.startsWith("https://"),
+      "Must use http:// or https:// scheme"
     )
     .default("http://localhost:3001"),
 

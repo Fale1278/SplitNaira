@@ -10,11 +10,17 @@ const mocks = vi.hoisted(() => ({
   mockGetFreighterWalletState: vi.fn(),
   mockConnectFreighter: vi.fn(),
   mockSignWithFreighter: vi.fn(),
+  mockGetAllSplits: vi.fn(),
+  mockGetClaimable: vi.fn(),
   mockGetSplit: vi.fn(),
   mockGetProjectHistory: vi.fn(),
+  mockGetTokenAllowlist: vi.fn(),
   mockBuildLockProjectXdr: vi.fn(),
   mockBuildDistributeXdr: vi.fn(),
   mockBuildCreateSplitXdr: vi.fn(),
+  mockBuildDepositXdr: vi.fn(),
+  mockBuildAllowTokenXdr: vi.fn(),
+  mockBuildDisallowTokenXdr: vi.fn(),
   mockSendTransaction: vi.fn()
 }));
 
@@ -29,11 +35,17 @@ vi.mock("@/hooks/useWallet", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
+  getAllSplits: mocks.mockGetAllSplits,
+  getClaimable: mocks.mockGetClaimable,
   getSplit: mocks.mockGetSplit,
   getProjectHistory: mocks.mockGetProjectHistory,
+  getTokenAllowlist: mocks.mockGetTokenAllowlist,
   buildLockProjectXdr: mocks.mockBuildLockProjectXdr,
   buildDistributeXdr: mocks.mockBuildDistributeXdr,
-  buildCreateSplitXdr: mocks.mockBuildCreateSplitXdr
+  buildCreateSplitXdr: mocks.mockBuildCreateSplitXdr,
+  buildDepositXdr: mocks.mockBuildDepositXdr,
+  buildAllowTokenXdr: mocks.mockBuildAllowTokenXdr,
+  buildDisallowTokenXdr: mocks.mockBuildDisallowTokenXdr
 }));
 
 vi.mock("@stellar/stellar-sdk", () => ({
@@ -73,6 +85,14 @@ const baseProject = {
   balance: "1000"
 };
 
+const baseAllowlist = {
+  admin: "GOWNER123",
+  allowedTokenCount: 1,
+  tokens: ["CTOKEN1"],
+  start: 0,
+  limit: 100
+};
+
 async function loadProject() {
   const user = userEvent.setup();
   renderSplitApp();
@@ -102,11 +122,26 @@ describe("SplitApp lock project flow", () => {
       address: "GOWNER123",
       network: "testnet"
     });
+    mocks.mockGetAllSplits.mockResolvedValue([]);
+    mocks.mockGetClaimable.mockResolvedValue({ claimed: "0", distributionRound: 0 });
     mocks.mockGetProjectHistory.mockResolvedValue({ items: [], nextCursor: null });
+    mocks.mockGetTokenAllowlist.mockResolvedValue(baseAllowlist);
     mocks.mockGetSplit.mockResolvedValue(baseProject);
     mocks.mockSignWithFreighter.mockResolvedValue("SIGNED_XDR");
     mocks.mockBuildLockProjectXdr.mockResolvedValue({
       xdr: "LOCK_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockBuildDepositXdr.mockResolvedValue({
+      xdr: "DEPOSIT_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockBuildAllowTokenXdr.mockResolvedValue({
+      xdr: "ALLOW_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockBuildDisallowTokenXdr.mockResolvedValue({
+      xdr: "DISALLOW_XDR",
       metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
     });
     mocks.mockSendTransaction.mockResolvedValue({ status: "PENDING", hash: "HASH_1" });
@@ -207,7 +242,10 @@ describe("Issue #174: owner gating and lock lifecycle", () => {
       address: "GOWNER123",
       network: "testnet"
     });
+    mocks.mockGetAllSplits.mockResolvedValue([]);
+    mocks.mockGetClaimable.mockResolvedValue({ claimed: "0", distributionRound: 0 });
     mocks.mockGetProjectHistory.mockResolvedValue({ items: [], nextCursor: null });
+    mocks.mockGetTokenAllowlist.mockResolvedValue(baseAllowlist);
     mocks.mockGetSplit.mockResolvedValue(baseProject);
     mocks.mockSignWithFreighter.mockResolvedValue("SIGNED_XDR");
     mocks.mockBuildLockProjectXdr.mockResolvedValue({
@@ -301,6 +339,92 @@ describe("Issue #174: owner gating and lock lifecycle", () => {
   });
 });
 
+describe("SplitApp admin allowlist flow", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.mockUseWallet.mockReturnValue({
+      wallet: {
+        connected: true,
+        address: "GOWNER123",
+        network: "testnet"
+      },
+      connect: vi.fn(),
+      refresh: vi.fn()
+    });
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: true,
+      address: "GOWNER123",
+      network: "testnet"
+    });
+    mocks.mockGetAllSplits.mockResolvedValue([]);
+    mocks.mockGetClaimable.mockResolvedValue({ claimed: "0", distributionRound: 0 });
+    mocks.mockGetProjectHistory.mockResolvedValue({ items: [], nextCursor: null });
+    mocks.mockGetTokenAllowlist.mockResolvedValue(baseAllowlist);
+    mocks.mockGetSplit.mockResolvedValue(baseProject);
+    mocks.mockSignWithFreighter.mockResolvedValue("SIGNED_XDR");
+    mocks.mockBuildAllowTokenXdr.mockResolvedValue({
+      xdr: "ALLOW_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockBuildDisallowTokenXdr.mockResolvedValue({
+      xdr: "DISALLOW_XDR",
+      metadata: { networkPassphrase: "TESTNET", contractId: "CID" }
+    });
+    mocks.mockSendTransaction.mockResolvedValue({ status: "PENDING", hash: "ALLOWLIST_HASH" });
+  });
+
+  it("shows the admin allowlist panel for the configured admin wallet", async () => {
+    renderSplitApp();
+
+    expect(await screen.findByText("Admin Token Allowlist")).toBeInTheDocument();
+    expect(screen.getByText("CTOKEN1")).toBeInTheDocument();
+  });
+
+  it("hides the admin allowlist panel for a non-admin wallet", async () => {
+    mocks.mockGetFreighterWalletState.mockResolvedValue({
+      connected: true,
+      address: "GNOTADMIN",
+      network: "testnet"
+    });
+    mocks.mockGetAllSplits.mockResolvedValue([]);
+    mocks.mockGetTokenAllowlist.mockResolvedValue(baseAllowlist);
+
+    renderSplitApp();
+
+    await waitFor(() => {
+      expect(screen.queryByText("Admin Token Allowlist")).not.toBeInTheDocument();
+    });
+  });
+
+  it("submits an allow-token action and refreshes allowlist state", async () => {
+    const user = userEvent.setup();
+    mocks.mockGetTokenAllowlist
+      .mockResolvedValueOnce(baseAllowlist)
+      .mockResolvedValueOnce({
+        ...baseAllowlist,
+        allowedTokenCount: 2,
+        tokens: ["CTOKEN1", "CTOKEN2"]
+      });
+
+    renderSplitApp();
+
+    await screen.findByText("Admin Token Allowlist");
+    await user.type(
+      screen.getByLabelText("Token Contract Address"),
+      "CTOKEN2"
+    );
+    await user.click(screen.getByRole("button", { name: "Allow Token" }));
+
+    await waitFor(() => {
+      expect(mocks.mockBuildAllowTokenXdr).toHaveBeenCalledWith("GOWNER123", "CTOKEN2");
+    });
+    await waitFor(() => {
+      expect(mocks.mockGetTokenAllowlist).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findByText("CTOKEN2")).toBeInTheDocument();
+  });
+});
+
 describe("SplitApp distribute flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -318,7 +442,10 @@ describe("SplitApp distribute flow", () => {
       address: "GOWNER123",
       network: "testnet"
     });
+    mocks.mockGetAllSplits.mockResolvedValue([]);
+    mocks.mockGetClaimable.mockResolvedValue({ claimed: "0", distributionRound: 0 });
     mocks.mockGetProjectHistory.mockResolvedValue({ items: [], nextCursor: null });
+    mocks.mockGetTokenAllowlist.mockResolvedValue(baseAllowlist);
     mocks.mockGetSplit.mockResolvedValue({ ...baseProject, balance: "5000" });
     mocks.mockSignWithFreighter.mockResolvedValue("SIGNED_XDR");
     mocks.mockBuildDistributeXdr.mockResolvedValue({
